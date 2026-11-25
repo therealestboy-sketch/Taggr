@@ -65,6 +65,8 @@ export const AuthOnboardingModal: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
             <form
                 onSubmit={handleSubmit}
+                toolname="create_profile"
+                tooldescription="Register a new Relay user profile with a chosen handle after signing in with Internet Identity."
                 className="w-full max-w-md rounded-2xl border ui-border-strong ui-surface p-6 space-y-5 shadow-2xl"
             >
                 <div className="space-y-2">
@@ -90,6 +92,9 @@ export const AuthOnboardingModal: React.FC = () => {
                         </span>
                         <input
                             type="text"
+                            name="username"
+                            required
+                            toolparamdescription="Desired unique Relay username without the leading @ symbol (e.g. alex_dev)."
                             autoFocus
                             maxLength={20}
                             value={handle}

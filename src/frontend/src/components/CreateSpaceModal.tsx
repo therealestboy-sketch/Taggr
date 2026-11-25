@@ -97,6 +97,8 @@ export const CreateSpaceModal: React.FC = () => {
             <form
                 onSubmit={handleSubmit}
                 onClick={(e) => e.stopPropagation()}
+                toolname="create_space"
+                tooldescription="Create a new public topic Space community on Relay."
                 className="w-full max-w-md rounded-2xl border ui-border-strong ui-surface p-5 space-y-4 shadow-2xl"
             >
                 <div className="flex items-center justify-between">
@@ -129,6 +131,9 @@ export const CreateSpaceModal: React.FC = () => {
                         </label>
                         <input
                             type="text"
+                            name="space_name"
+                            required
+                            toolparamdescription="Short uppercase identifier for the new Space (e.g. DESIGN, PHOTOGRAPHY)."
                             maxLength={25}
                             value={name}
                             onChange={(e) => setName(e.target.value)}
@@ -141,6 +146,8 @@ export const CreateSpaceModal: React.FC = () => {
                             Description
                         </label>
                         <textarea
+                            name="description"
+                            toolparamdescription="Brief overview of what members share and discuss in this Space."
                             rows={3}
                             maxLength={400}
                             value={description}

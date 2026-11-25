@@ -317,10 +317,18 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
 
                 {/* RIGHT DISCOVERY SIDEBAR */}
                 <aside className="hidden xl:flex flex-col gap-4 w-[310px] shrink-0 sticky top-0 h-screen px-4 py-4 overflow-y-auto">
-                    <form onSubmit={handleSearchSubmit} className="relative">
+                    <form
+                        onSubmit={handleSearchSubmit}
+                        className="relative"
+                        toolname="search_relay"
+                        tooldescription="Search posts, users, hashtags, and Spaces on Relay."
+                        toolautosubmit=""
+                    >
                         <Search className="w-4 h-4 ui-text-muted absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                         <input
                             type="text"
+                            name="query"
+                            toolparamdescription="Search query such as keywords, a #hashtag, an @username, or a Space name (e.g. #icp, @alex, DESIGN)."
                             value={searchText}
                             onChange={(e) => setSearchText(e.target.value)}
                             placeholder="Search posts, #tags, @users"

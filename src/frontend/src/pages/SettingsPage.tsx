@@ -439,6 +439,8 @@ export const SettingsPage: React.FC = () => {
 
                             <form
                                 onSubmit={handleSaveProfile}
+                                toolname="update_profile"
+                                tooldescription="Update the signed-in user's public Relay profile details."
                                 className="space-y-3 pt-2 border-t ui-border"
                             >
                                 <div>
@@ -447,6 +449,8 @@ export const SettingsPage: React.FC = () => {
                                     </label>
                                     <input
                                         type="text"
+                                        name="display_name"
+                                        toolparamdescription="Public display name shown alongside your handle (e.g. Alex Rivera)."
                                         maxLength={40}
                                         value={displayName}
                                         onChange={(e) =>
@@ -463,6 +467,8 @@ export const SettingsPage: React.FC = () => {
                                     </label>
                                     <input
                                         type="text"
+                                        name="new_handle"
+                                        toolparamdescription="Optional replacement username without @; leave blank to keep the current handle."
                                         maxLength={20}
                                         value={newName}
                                         onChange={(e) =>
@@ -478,6 +484,8 @@ export const SettingsPage: React.FC = () => {
                                         Bio
                                     </label>
                                     <textarea
+                                        name="bio"
+                                        toolparamdescription="Short personal biography displayed on the profile page."
                                         rows={3}
                                         value={about}
                                         onChange={(e) =>
@@ -494,6 +502,8 @@ export const SettingsPage: React.FC = () => {
                                     </label>
                                     <input
                                         type="url"
+                                        name="website"
+                                        toolparamdescription="Personal website or portfolio URL starting with https:// (e.g. https://yoursite.com)."
                                         value={website}
                                         onChange={(e) =>
                                             setWebsite(e.target.value)
@@ -585,13 +595,20 @@ export const SettingsPage: React.FC = () => {
                             </div>
                         </div>
 
-                        <form onSubmit={handleSetBucket} className="space-y-2">
+                        <form
+                            onSubmit={handleSetBucket}
+                            toolname="admin_set_media_bucket"
+                            tooldescription="Configure the shared Internet Computer media bucket canister ID used for image uploads."
+                            className="space-y-2"
+                        >
                             <label className="block text-xs font-medium ui-text-secondary">
                                 Shared media bucket canister ID
                             </label>
                             <div className="flex gap-2">
                                 <input
                                     type="text"
+                                    name="bucket_canister_id"
+                                    toolparamdescription="Internet Computer canister principal ID for the shared media bucket (e.g. 52rcs-naaaa-aaaao-qqosa-cai)."
                                     value={bucketId}
                                     onChange={(e) =>
                                         setBucketId(e.target.value)
@@ -608,7 +625,12 @@ export const SettingsPage: React.FC = () => {
                             </div>
                         </form>
 
-                        <form onSubmit={handleAddDomain} className="space-y-2">
+                        <form
+                            onSubmit={handleAddDomain}
+                            toolname="admin_register_custom_domain"
+                            tooldescription="Register a custom hostname in /.well-known/ic-domains for this Relay canister."
+                            className="space-y-2"
+                        >
                             <label className="block text-xs font-medium ui-text-secondary">
                                 Register custom domain (served in
                                 /.well-known/ic-domains)
@@ -616,6 +638,9 @@ export const SettingsPage: React.FC = () => {
                             <div className="flex gap-2">
                                 <input
                                     type="text"
+                                    name="domain"
+                                    required
+                                    toolparamdescription="Custom hostname without protocol or path (e.g. social.yourdomain.com)."
                                     value={customDomain}
                                     onChange={(e) =>
                                         setCustomDomain(e.target.value)
@@ -638,13 +663,21 @@ export const SettingsPage: React.FC = () => {
                             </div>
                         </form>
 
-                        <form onSubmit={handleAddAdmin} className="space-y-2">
+                        <form
+                            onSubmit={handleAddAdmin}
+                            toolname="admin_grant_admin_role"
+                            tooldescription="Grant administrator privileges on Relay to another Internet Computer principal."
+                            className="space-y-2"
+                        >
                             <label className="block text-xs font-medium ui-text-secondary">
                                 Grant admin role to principal
                             </label>
                             <div className="flex gap-2">
                                 <input
                                     type="text"
+                                    name="principal_id"
+                                    required
+                                    toolparamdescription="Textual Internet Computer principal ID to promote to administrator."
                                     value={newAdminPrincipal}
                                     onChange={(e) =>
                                         setNewAdminPrincipal(e.target.value)
