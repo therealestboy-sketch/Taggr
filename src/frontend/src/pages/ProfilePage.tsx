@@ -1,13 +1,26 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, Loader2, ShieldAlert } from "lucide-react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import {
+    ArrowLeft,
+    Camera,
+    ExternalLink,
+    Loader2,
+    ShieldAlert,
+} from "lucide-react";
 import { expandMeta } from "../api";
 import { useApp } from "../app-context";
 import { BRAND } from "../brand";
+import { Avatar } from "../components/Avatar";
 import { PostCard } from "../components/PostCard";
 import { currentDomain } from "../env";
 import { navigate } from "../router";
 import { ApiResult, Post, PostMeta, User } from "../types";
-import { avatarGradient, avatarInitials, formatBytes } from "../utils";
+import {
+    avatarGradient,
+    compressAvatarFile,
+    compressBannerFile,
+    formatBytes,
+    resolveMediaRef,
+} from "../utils";
 
 export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
     const {
@@ -15,12 +28,20 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
         user: me,
         appInfo,
         refreshUser,
+        openLightbox,
         feedRefreshKey,
+        bumpFeed,
         toast,
     } = useApp();
     const [profile, setProfile] = useState<User | null>(null);
     const [posts, setPosts] = useState<Post[]>([]);
     const [loading, setLoading] = useState(true);
+    const [uploadingKind, setUploadingKind] = useState<
+        "avatar" | "banner" | null
+    >(null);
+
+    const avatarInputRef = useRef<HTMLInputElement | null>(null);
+    const bannerInputRef = useRef<HTMLInputElement | null>(null);
 
     const loadProfile = useCallback(async () => {
         setLoading(true);
@@ -45,6 +66,63 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
     const isFollowing = Boolean(
         me && profile && me.followees?.includes(profile.id),
     );
+
+    const handleUploadProfileMedia = async (
+        kind: "avatar" | "banner",
+        file: File | undefined,
+    ) => {
+        if (!file || !me) return;
+        if (!appInfo?.media_bucket) {
+            toast("Shared media storage is not configured yet.", "error");
+            return;
+        }
+        setUploadingKind(kind);
+        try {
+            const maxBytes = appInfo.max_blob_size_bytes || 512 * 1024;
+            const bytes =
+                kind === "avatar"
+                    ? await compressAvatarFile(file, maxBytes)
+                    : await compressBannerFile(file, maxBytes);
+            const uploaded = await api.upload_media(bytes);
+            if (!uploaded) {
+                toast("Upload failed. Please try again.", "error");
+                return;
+            }
+            if ("Err" in uploaded && uploaded.Err) {
+                toast(uploaded.Err, "error");
+                return;
+            }
+            if (!uploaded.Ok) return;
+            const [, offset, len] = uploaded.Ok;
+            const mediaRef = `${appInfo.media_bucket}:${Number(offset)}:${Number(len)}`;
+            const nextSettings = {
+                ...(me.settings || {}),
+                [kind]: mediaRef,
+            };
+            const saveRes = await api.call<ApiResult<null>>(
+                "update_user_settings",
+                nextSettings,
+            );
+            if (saveRes && "Err" in saveRes) {
+                toast(saveRes.Err, "error");
+                return;
+            }
+            await Promise.all([refreshUser(), loadProfile()]);
+            bumpFeed();
+            toast(
+                kind === "avatar"
+                    ? "Profile picture updated"
+                    : "Cover photo updated",
+            );
+        } catch (err) {
+            toast(
+                err instanceof Error ? err.message : "Upload failed",
+                "error",
+            );
+        } finally {
+            setUploadingKind(null);
+        }
+    };
 
     const handleToggleFollow = async () => {
         if (!profile) return;
@@ -86,6 +164,16 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
         }
     };
 
+    const bannerUrl = resolveMediaRef(profile?.settings?.banner);
+    const avatarUrl = resolveMediaRef(profile?.settings?.avatar);
+    const displayName = profile?.settings?.display_name?.trim();
+    const website = profile?.settings?.website?.trim();
+    const safeWebsite =
+        website &&
+        (website.startsWith("https://") || website.startsWith("http://"))
+            ? website
+            : null;
+
     const usedBytes = appInfo?.storage_used_bytes ?? 0;
     const quotaBytes = appInfo?.storage_quota_bytes ?? 50 * 1024 * 1024;
     const quotaPct = Math.min(100, Math.round((usedBytes / quotaBytes) * 100));
@@ -102,7 +190,7 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                 </button>
                 <div>
                     <h1 className="font-bold text-base">
-                        @{profile?.name || handle}
+                        {displayName || `@${profile?.name || handle}`}
                     </h1>
                     {profile && (
                         <p className="text-xs ui-text-muted">
@@ -123,18 +211,126 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                 </div>
             ) : (
                 <>
-                    <div className="px-4 py-5 border-b ui-border space-y-4">
-                        <div className="flex items-start justify-between gap-3">
-                            <div
-                                className="w-16 h-16 rounded-2xl font-bold text-xl text-white flex items-center justify-center shadow-sm"
-                                style={{
-                                    background: avatarGradient(profile.name),
+                    {/* Hidden file inputs for one-click profile media uploads */}
+                    {isOwn && (
+                        <>
+                            <input
+                                ref={avatarInputRef}
+                                type="file"
+                                accept="image/png,image/jpeg,image/webp,image/gif"
+                                className="hidden"
+                                onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    e.target.value = "";
+                                    handleUploadProfileMedia("avatar", f);
                                 }}
+                            />
+                            <input
+                                ref={bannerInputRef}
+                                type="file"
+                                accept="image/png,image/jpeg,image/webp"
+                                className="hidden"
+                                onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    e.target.value = "";
+                                    handleUploadProfileMedia("banner", f);
+                                }}
+                            />
+                        </>
+                    )}
+
+                    {/* Cover / Banner Photo */}
+                    <div
+                        className="relative h-36 sm:h-44 w-full overflow-hidden border-b ui-border"
+                        style={
+                            bannerUrl
+                                ? undefined
+                                : {
+                                      background: avatarGradient(profile.name),
+                                      opacity: 0.85,
+                                  }
+                        }
+                    >
+                        {bannerUrl && (
+                            <img
+                                src={bannerUrl}
+                                alt="Profile cover"
+                                onClick={() =>
+                                    openLightbox(
+                                        bannerUrl,
+                                        `@${profile.name}'s cover photo`,
+                                    )
+                                }
+                                className="w-full h-full object-cover cursor-pointer"
+                            />
+                        )}
+                        {isOwn && (
+                            <button
+                                type="button"
+                                disabled={uploadingKind !== null}
+                                onClick={() => bannerInputRef.current?.click()}
+                                className="absolute right-3 bottom-3 px-3 py-1.5 rounded-full bg-black/65 hover:bg-black/80 text-white text-xs font-medium inline-flex items-center gap-1.5 backdrop-blur-sm transition cursor-pointer disabled:opacity-50"
                             >
-                                {avatarInitials(profile.name)}
+                                {uploadingKind === "banner" ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                    <Camera className="w-3.5 h-3.5" />
+                                )}
+                                <span>
+                                    {bannerUrl ? "Change cover" : "Add cover"}
+                                </span>
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Profile Header Body */}
+                    <div className="px-4 pb-5 border-b ui-border space-y-4">
+                        <div className="flex items-end justify-between gap-3 -mt-10 relative z-10">
+                            <div className="relative group">
+                                <Avatar
+                                    name={profile.name}
+                                    avatarRef={profile.settings?.avatar}
+                                    size="xl"
+                                    rounded="full"
+                                    className="ring-4 ring-[var(--ui-bg)] shadow-md"
+                                    onClick={
+                                        isOwn
+                                            ? () =>
+                                                  avatarInputRef.current?.click()
+                                            : avatarUrl
+                                              ? () =>
+                                                    openLightbox(
+                                                        avatarUrl,
+                                                        `@${profile.name}`,
+                                                    )
+                                              : undefined
+                                    }
+                                    title={
+                                        isOwn
+                                            ? "Click to change profile picture"
+                                            : `@${profile.name}`
+                                    }
+                                />
+                                {isOwn && (
+                                    <button
+                                        type="button"
+                                        disabled={uploadingKind !== null}
+                                        onClick={() =>
+                                            avatarInputRef.current?.click()
+                                        }
+                                        className="absolute right-0 bottom-0 w-7 h-7 rounded-full ui-accent-bg flex items-center justify-center shadow-md cursor-pointer disabled:opacity-50"
+                                        title="Change profile picture"
+                                    >
+                                        {uploadingKind === "avatar" ? (
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        ) : (
+                                            <Camera className="w-3.5 h-3.5" />
+                                        )}
+                                    </button>
+                                )}
                             </div>
 
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 pt-12">
                                 {isOwn ? (
                                     <button
                                         type="button"
@@ -181,9 +377,9 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                         </div>
 
                         <div className="space-y-1.5">
-                            <div className="flex items-center gap-2">
-                                <h2 className="font-bold text-lg">
-                                    @{profile.name}
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <h2 className="font-bold text-lg leading-tight">
+                                    {displayName || `@${profile.name}`}
                                 </h2>
                                 {profile.deactivated && (
                                     <span
@@ -198,10 +394,29 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                                     </span>
                                 )}
                             </div>
+                            <div className="text-xs ui-text-muted">
+                                @{profile.name}
+                            </div>
                             {profile.about && (
-                                <p className="text-sm ui-text-secondary leading-relaxed whitespace-pre-wrap">
+                                <p className="text-sm ui-text-secondary leading-relaxed whitespace-pre-wrap pt-1">
                                     {profile.about}
                                 </p>
+                            )}
+                            {safeWebsite && (
+                                <a
+                                    href={safeWebsite}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-xs ui-accent-text hover:underline pt-0.5"
+                                >
+                                    <ExternalLink className="w-3 h-3" />
+                                    <span>
+                                        {safeWebsite.replace(
+                                            /^https?:\/\//,
+                                            "",
+                                        )}
+                                    </span>
+                                </a>
                             )}
                         </div>
 

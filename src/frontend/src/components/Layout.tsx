@@ -15,7 +15,7 @@ import {
 import { useApp } from "../app-context";
 import { BRAND } from "../brand";
 import { navigate, Route } from "../router";
-import { avatarGradient, avatarInitials } from "../utils";
+import { Avatar } from "./Avatar";
 import { BrandLogo } from "./BrandLogo";
 
 type LayoutProps = {
@@ -159,14 +159,12 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
                         )}
                     </button>
                     {user ? (
-                        <button
-                            type="button"
+                        <Avatar
+                            name={user.name}
+                            avatarRef={user.settings?.avatar}
+                            size="sm"
                             onClick={() => navigate(`/user/${user.name}`)}
-                            className="w-8 h-8 rounded-full font-bold text-xs text-white flex items-center justify-center cursor-pointer"
-                            style={{ background: avatarGradient(user.name) }}
-                        >
-                            {avatarInitials(user.name)}
-                        </button>
+                        />
                     ) : (
                         <button
                             type="button"
@@ -245,20 +243,16 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
                                     }
                                     className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer"
                                 >
-                                    <div
-                                        className="w-9 h-9 rounded-full font-bold text-xs text-white flex items-center justify-center shrink-0"
-                                        style={{
-                                            background: avatarGradient(
-                                                user.name,
-                                            ),
-                                        }}
-                                    >
-                                        {avatarInitials(user.name)}
-                                    </div>
+                                    <Avatar
+                                        name={user.name}
+                                        avatarRef={user.settings?.avatar}
+                                        size="md"
+                                    />
                                     <div className="min-w-0">
                                         <div className="flex items-center gap-1.5">
                                             <span className="font-semibold text-sm truncate">
-                                                @{user.name}
+                                                {user.settings?.display_name ||
+                                                    `@${user.name}`}
                                             </span>
                                             {appInfo?.is_admin && (
                                                 <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full ui-accent-soft">
@@ -267,7 +261,7 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
                                             )}
                                         </div>
                                         <div className="text-xs ui-text-muted truncate">
-                                            Passkey · Signed in
+                                            @{user.name}
                                         </div>
                                     </div>
                                 </button>

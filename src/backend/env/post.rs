@@ -60,6 +60,10 @@ pub enum Extension {
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Meta<'a> {
     author_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author_avatar: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    author_display_name: Option<&'a str>,
     author_filters: UserFilter,
     viewer_blocked: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,6 +175,16 @@ impl Post {
         let user = state.users.get(&self.user).expect("no user found");
         let mut meta = Meta {
             author_name: user.name.as_str(),
+            author_avatar: user
+                .settings
+                .get("avatar")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
+            author_display_name: user
+                .settings
+                .get("display_name")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty()),
             author_filters: user.filters.noise.clone(),
             viewer_blocked: state
                 .principal_to_user(caller())

@@ -3,12 +3,8 @@ import { BarChart3, Image as ImageIcon, Loader2, X } from "lucide-react";
 import { useApp } from "../app-context";
 import { BRAND } from "../brand";
 import { PostId, SpaceId } from "../types";
-import {
-    avatarGradient,
-    avatarInitials,
-    compressImageFile,
-    formatBytes,
-} from "../utils";
+import { compressImageFile, formatBytes } from "../utils";
+import { Avatar } from "./Avatar";
 
 type UploadedRef = {
     blobId: string;
@@ -208,12 +204,11 @@ export const Composer: React.FC<ComposerProps> = ({
             className={`px-4 ${compact ? "py-3" : "py-3.5"} border-b ui-border`}
         >
             <div className="flex gap-3">
-                <div
-                    className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center font-bold text-xs text-white"
-                    style={{ background: avatarGradient(user.name) }}
-                >
-                    {avatarInitials(user.name)}
-                </div>
+                <Avatar
+                    name={user.name}
+                    avatarRef={user.settings?.avatar}
+                    size="lg"
+                />
 
                 <div className="flex-1 min-w-0 space-y-2.5">
                     <textarea

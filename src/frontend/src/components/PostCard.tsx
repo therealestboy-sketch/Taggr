@@ -16,7 +16,8 @@ import { BRAND, REACTION_BY_ID } from "../brand";
 import { bucketImageUrl } from "../env";
 import { navigate } from "../router";
 import { ApiResult, Post, PostMeta } from "../types";
-import { avatarGradient, avatarInitials, formatRelativeTime } from "../utils";
+import { formatRelativeTime } from "../utils";
+import { Avatar } from "./Avatar";
 
 type PostCardProps = {
     post: Post;
@@ -265,25 +266,37 @@ export const PostCard: React.FC<PostCardProps> = ({
         >
             <div className="flex gap-3">
                 {/* Avatar */}
-                <button
-                    type="button"
+                <Avatar
+                    name={authorName}
+                    avatarRef={post.meta?.author_avatar}
+                    size="lg"
                     onClick={() => navigate(`/user/${authorName}`)}
-                    className="w-10 h-10 rounded-full shrink-0 flex items-center justify-center font-bold text-xs text-white cursor-pointer"
-                    style={{ background: avatarGradient(authorName) }}
-                    title={`@${authorName}`}
-                >
-                    {avatarInitials(authorName)}
-                </button>
+                />
 
                 {/* Body Column */}
                 <div className="flex-1 min-w-0 space-y-2.5">
                     {/* Header Row */}
                     <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 text-sm">
+                            {post.meta?.author_display_name && (
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        navigate(`/user/${authorName}`)
+                                    }
+                                    className="font-semibold ui-text hover:underline cursor-pointer"
+                                >
+                                    {post.meta.author_display_name}
+                                </button>
+                            )}
                             <button
                                 type="button"
                                 onClick={() => navigate(`/user/${authorName}`)}
-                                className="font-semibold ui-text hover:underline cursor-pointer"
+                                className={`hover:underline cursor-pointer ${
+                                    post.meta?.author_display_name
+                                        ? "ui-text-muted text-xs"
+                                        : "font-semibold ui-text"
+                                }`}
                             >
                                 @{authorName}
                             </button>

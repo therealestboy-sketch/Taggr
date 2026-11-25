@@ -47,6 +47,8 @@ export type Space = {
 
 export type PostMeta = {
     author_name: string;
+    author_avatar?: string;
+    author_display_name?: string;
     author_filters: UserFilter;
     viewer_blocked: boolean;
     realm_color: string;

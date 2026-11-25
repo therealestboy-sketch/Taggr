@@ -1,3 +1,5 @@
+import { bucketImageUrl } from "./env";
+
 const AVATAR_GRADIENTS = [
     "linear-gradient(135deg, #3b82f6, #6366f1)",
     "linear-gradient(135deg, #10b981, #0ea5e9)",
@@ -20,6 +22,29 @@ export function avatarInitials(name: string): string {
     const clean = name.trim();
     if (!clean) return "?";
     return clean.slice(0, 2).toUpperCase();
+}
+
+/**
+ * Resolves a stored media ref ("<bucketId>:<offset>:<len>") or direct URL
+ * into a loadable image URL.
+ */
+export function resolveMediaRef(ref?: string | null): string | null {
+    if (!ref) return null;
+    const trimmed = ref.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith("https://") || trimmed.startsWith("http://")) {
+        return trimmed;
+    }
+    const parts = trimmed.split(":");
+    if (parts.length === 3) {
+        const [bucketId, offsetStr, lenStr] = parts;
+        const offset = Number(offsetStr);
+        const len = Number(lenStr);
+        if (bucketId && Number.isFinite(offset) && Number.isFinite(len)) {
+            return bucketImageUrl(bucketId, offset, len);
+        }
+    }
+    return null;
 }
 
 export function formatRelativeTime(timestampNs: number): string {
@@ -66,6 +91,7 @@ export async function compressImageFile(
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     if (!ctx) {
+        bitmap.close();
         return new Uint8Array(await file.arrayBuffer());
     }
 
@@ -90,4 +116,95 @@ export async function compressImageFile(
     throw new Error(
         `Image could not be compressed under ${Math.round(maxBytes / 1024)} KB.`,
     );
+}
+
+/**
+ * Centre-crops and compresses a profile picture into a sharp 400x400 WebP square.
+ */
+export async function compressAvatarFile(
+    file: File,
+    maxBytes: number,
+): Promise<Uint8Array> {
+    const bitmap = await createImageBitmap(file);
+    const side = Math.min(bitmap.width, bitmap.height);
+    const sx = Math.floor((bitmap.width - side) / 2);
+    const sy = Math.floor((bitmap.height - side) / 2);
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        bitmap.close();
+        return compressImageFile(file, maxBytes);
+    }
+
+    for (const dim of [400, 300, 220]) {
+        canvas.width = dim;
+        canvas.height = dim;
+        ctx.clearRect(0, 0, dim, dim);
+        ctx.drawImage(bitmap, sx, sy, side, side, 0, 0, dim, dim);
+
+        for (const quality of [0.86, 0.74, 0.6]) {
+            const blob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob(resolve, "image/webp", quality),
+            );
+            if (blob && blob.size <= maxBytes) {
+                bitmap.close();
+                return new Uint8Array(await blob.arrayBuffer());
+            }
+        }
+    }
+
+    bitmap.close();
+    throw new Error("Profile picture could not be compressed.");
+}
+
+/**
+ * Centre-crops and compresses a profile cover photo into a crisp 3:1 WebP banner.
+ */
+export async function compressBannerFile(
+    file: File,
+    maxBytes: number,
+): Promise<Uint8Array> {
+    const bitmap = await createImageBitmap(file);
+    const targetRatio = 3;
+    let sw = bitmap.width;
+    let sh = bitmap.height;
+    let sx = 0;
+    let sy = 0;
+
+    if (sw / sh > targetRatio) {
+        sw = Math.round(sh * targetRatio);
+        sx = Math.floor((bitmap.width - sw) / 2);
+    } else {
+        sh = Math.round(sw / targetRatio);
+        sy = Math.floor((bitmap.height - sh) / 2);
+    }
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        bitmap.close();
+        return compressImageFile(file, maxBytes);
+    }
+
+    for (const width of [1500, 1200, 900]) {
+        const height = Math.round(width / targetRatio);
+        canvas.width = width;
+        canvas.height = height;
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, width, height);
+
+        for (const quality of [0.84, 0.72, 0.58]) {
+            const blob = await new Promise<Blob | null>((resolve) =>
+                canvas.toBlob(resolve, "image/webp", quality),
+            );
+            if (blob && blob.size <= maxBytes) {
+                bitmap.close();
+                return new Uint8Array(await blob.arrayBuffer());
+            }
+        }
+    }
+
+    bitmap.close();
+    throw new Error("Cover photo could not be compressed.");
 }
