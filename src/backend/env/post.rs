@@ -302,7 +302,7 @@ impl Post {
         let max_len = CONFIG.max_blob_size_bytes as u64;
         if !refs
             .iter()
-            .all(|(id, _, len)| id.len() <= 8 && *len > 0 && *len <= max_len)
+            .all(|(id, _, len)| !id.is_empty() && id.len() <= 16 && *len > 0 && *len <= max_len)
         {
             return Err("invalid refs".into());
         }
@@ -1218,17 +1218,24 @@ mod tests {
 
         let max = CONFIG.max_blob_size_bytes as u64;
 
-        // too long blob id
-        assert!(p.valid(&[("abcdefghX".to_string(), 0, max)]).is_err());
+        // empty blob id
+        assert!(p.valid(&[("".to_string(), 0, max)]).is_err());
 
-        // valid ref
-        assert!(p.valid(&[("abcdefgh".to_string(), 0, max)]).is_ok());
+        // too long blob id (> 16 chars)
+        assert!(p
+            .valid(&[("0123456789abcdef0".to_string(), 0, max)])
+            .is_err());
+
+        // valid 16-char ref (as produced by upload_media)
+        assert!(p.valid(&[("0123456789abcdef".to_string(), 0, max)]).is_ok());
 
         // zero-length ref
-        assert!(p.valid(&[("abcdefgh".to_string(), 0, 0)]).is_err());
+        assert!(p.valid(&[("0123456789abcdef".to_string(), 0, 0)]).is_err());
 
         // oversize ref
-        assert!(p.valid(&[("abcdefgh".to_string(), 0, max + 1)]).is_err());
+        assert!(p
+            .valid(&[("0123456789abcdef".to_string(), 0, max + 1)])
+            .is_err());
     }
 
     #[test]
