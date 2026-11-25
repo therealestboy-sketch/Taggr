@@ -128,9 +128,27 @@ fn add_session(principal: Principal) {
 fn init() {
     grow_to_fit(0, CONTROLLERS_REGION_END);
     stable_write(0, &CONTROLLERS_REGION_END.to_be_bytes());
-    let controllers: Vec<Principal> =
-        Decode!(&msg_arg_data(), Vec<Principal>).expect("couldn't decode controllers list");
+    let arg = msg_arg_data();
+    let controllers: Vec<Principal> = if arg.is_empty() {
+        vec![msg_caller()]
+    } else {
+        Decode!(&arg, Vec<Principal>)
+            .ok()
+            .filter(|list| !list.is_empty())
+            .unwrap_or_else(|| vec![msg_caller()])
+    };
     write_controllers(&controllers);
+}
+
+/// Adds an authorized controller principal (e.g. the main social canister) to this shared bucket.
+#[ic_cdk_macros::update]
+fn add_controller(principal: Principal) {
+    assert_controller();
+    let mut controllers = read_controllers();
+    if !controllers.contains(&principal) {
+        controllers.push(principal);
+        write_controllers(&controllers);
+    }
 }
 
 #[export_name = "canister_pre_upgrade"]

@@ -6,7 +6,7 @@ pub fn set_index_metadata(domain: &str, body: &[u8]) -> Vec<u8> {
         domain,
         "",
         CONFIG.name,
-        "The first FULLY decentralised social network powered by the Internet Computer.",
+        "An open, ad-free social network powered by the Internet Computer.",
         "website",
     )
 }
@@ -15,7 +15,7 @@ fn truncate(s: &str, max_chars: usize) -> String {
     match s.char_indices().nth(max_chars) {
         None => s.to_string(),
         Some((idx, _)) => {
-            let mut truncated_string = s[..idx - 3].to_string();
+            let mut truncated_string = s[..idx.saturating_sub(3)].to_string();
             truncated_string.push_str("...");
             truncated_string
         }
@@ -47,7 +47,6 @@ pub fn set_metadata(
     .replace('\n', "");
 
     String::from_utf8_lossy(body)
-        // We have to remove the space before the last "/" so that the test passes on the minimized version.
         .replace(r#"<meta name="mark" content="OG"/>"#, &metadata)
         .as_bytes()
         .to_vec()

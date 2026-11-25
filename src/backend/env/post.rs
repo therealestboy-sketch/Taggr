@@ -301,6 +301,15 @@ impl Post {
     }
 
     pub fn delete(&mut self, versions: Vec<String>) {
+        let versions = if versions.is_empty() {
+            vec![if self.body.is_empty() {
+                "deleted".to_string()
+            } else {
+                self.body.clone()
+            }]
+        } else {
+            versions
+        };
         self.files.clear();
         self.body.clear();
         self.patches.clear();
@@ -414,17 +423,19 @@ impl Post {
     ) -> Result<(), String> {
         mutate(|state| {
             let user = state.principal_to_user(principal).ok_or("no user found")?;
-            let bucket = user.bucket;
+            if user.deactivated {
+                return Err("account suspended".into());
+            }
+            let bucket = state.media_bucket.or(user.bucket);
             let mut post = Post::get(state, &id).ok_or("no post found")?.clone();
             if post.user != user.id {
                 return Err("unauthorized".to_string());
             }
             if let Some(false) = picked_realm.as_ref().map(|name| user.realms.contains(name)) {
                 if post.parent.is_none() {
-                    return Err("you're not in the realm".into());
+                    return Err("you are not a member of this Space".into());
                 }
             }
-            let user_id = user.id;
             let tags = tags(CONFIG.max_tag_length, &body).collect();
             if post.parent.is_none() {
                 state.register_post_tags(post.id, &tags);
@@ -435,7 +446,7 @@ impl Post {
             post.timestamp = timestamp;
             post.valid(&refs)?;
             if !refs.is_empty() {
-                let bucket = bucket.ok_or("personal media bucket not configured")?;
+                let bucket = bucket.ok_or("media bucket not configured")?;
                 let existing_ids = post
                     .files
                     .keys()
@@ -449,18 +460,10 @@ impl Post {
                         .insert(format!("{}@{}", blob_id, bucket), (*offset, *len as usize));
                 }
             }
-            let costs = post.costs(state);
-            state.charge_in_realm(
-                user_id,
-                costs,
-                post.realm.as_ref(),
-                format!("editing of post [{0}](#/post/{0})", id),
-            )?;
 
             let current_realm = post.realm.clone();
 
-            // After we validated the new edited copy of the post, charged the user, we should remove the
-            // old post, and insert the edited one.
+            // After we validated the new edited copy of the post, replace the old post.
             Post::take(state, &id).expect("couldn't remove old post");
             Post::save(state, post);
 
@@ -482,34 +485,34 @@ impl Post {
         picked_realm: Option<String>,
         extension: Option<Extension>,
     ) -> Result<PostId, String> {
+        let is_admin = state.is_admin(principal);
         let user = state.principal_to_user(principal).ok_or("user not found")?;
 
         if user.deactivated {
-            return Err("account deactivated".into());
+            return Err("account suspended".into());
         }
 
-        let bucket = user.bucket;
+        let bucket = state.media_bucket.or(user.bucket);
 
         let realm = match parent.and_then(|id| Post::get(state, &id)) {
             Some(parent) => parent.realm.clone(),
             None => match picked_realm {
                 Some(value) if value.to_lowercase() == CONFIG.name.to_lowercase() => None,
-                value => value,
+                value => value.map(|v| v.to_uppercase()),
             },
         };
         if let Some(realm_id) = &realm {
+            if !state.realms.contains_key(realm_id) {
+                return Err(format!("Space {} not found", realm_id));
+            }
             if user.organic() {
-                if parent.is_none() && !user.realms.contains(realm_id) {
-                    return Err(format!("not a member of the realm {}", realm_id));
-                }
                 if let Some(realm) = state.realms.get(realm_id) {
                     let whitelist = &realm.whitelist;
                     if (parent.is_some() && realm.comments_filtering || parent.is_none())
-                        && (!whitelist.is_empty() && !whitelist.contains(&user.id)
-                            || whitelist.is_empty() && !user.get_filter().passes(&realm.filter))
+                        && (!whitelist.is_empty() && !whitelist.contains(&user.id))
                     {
                         return Err(format!(
-                            "{} realm is gated and you are not allowed to post to this realm",
+                            "Space {} is invite-only and you are not allowed to post here",
                             realm_id
                         ));
                     }
@@ -520,18 +523,47 @@ impl Post {
                 Post::get(state, &post_id).and_then(|post| state.users.get(&post.user))
             })
         }) {
-            if !discussion_owner.accepts(user.id, &user.get_filter()) {
+            if discussion_owner.blacklist.contains(&user.id) {
                 return Err(format!(
-                    "you cannot participate in discussions started by {}",
+                    "you cannot participate in discussions started by @{}",
                     discussion_owner.name
                 ));
             }
         }
 
         let user_id = user.id;
-        let controversial = user.controversial();
-        let user_balance = user.balance;
+        let controversial = false;
         let is_organic = user.organic();
+        let is_comment = parent.is_some();
+
+        // Enforce rate limits instead of credit penalties
+        if !is_admin && is_organic {
+            let recent_count = user
+                .posts(None, state, 0, is_comment)
+                .take_while(|post| {
+                    post.timestamp() + if is_comment { HOUR } else { DAY } > timestamp
+                })
+                .count();
+            let limit = if is_comment {
+                CONFIG.max_comments_per_hour
+            } else {
+                CONFIG.max_posts_per_day
+            };
+            if recent_count >= limit {
+                return Err(if is_comment {
+                    format!(
+                        "Hourly reply limit reached ({} replies/hour). Please try again shortly.",
+                        limit
+                    )
+                } else {
+                    format!(
+                        "Daily post limit reached ({} posts/day). Please try again tomorrow.",
+                        limit
+                    )
+                });
+            }
+        }
+
         let tags = tags(CONFIG.max_tag_length, &body).collect::<BTreeSet<_>>();
         let mut post = Post::new(
             user_id,
@@ -541,60 +573,32 @@ impl Post {
             parent,
             extension,
             realm.clone(),
-            (user_balance / token::base()).min(CONFIG.post_heat_token_balance_cap) as u32,
+            0,
         );
         post.valid(refs)?;
         if !refs.is_empty() {
-            let bucket = bucket.ok_or("personal media bucket not configured")?;
+            let bucket = bucket.ok_or("media bucket not configured")?;
             for (blob_id, offset, len) in refs {
                 post.files
                     .insert(format!("{}@{}", blob_id, bucket), (*offset, *len as usize));
             }
         }
-        let costs = post.costs(state);
         let future_id = state.next_post_id;
-        let is_comment = parent.is_some();
-
-        let excess_factor = user
-            .posts(None, state, 0, is_comment)
-            .take_while(|post| post.timestamp() + if is_comment { HOUR } else { DAY } > timestamp)
-            .count()
-            .saturating_sub(if is_comment {
-                CONFIG.max_comments_per_hour
-            } else {
-                CONFIG.max_posts_per_day
-            });
-        if excess_factor > 0 {
-            let excess_penalty = CONFIG.excess_penalty * excess_factor as Credits;
-            state.charge_in_realm(
-                user_id,
-                excess_penalty + refs.len() as Credits * excess_penalty,
-                realm.as_ref(),
-                "excessive posting penalty",
-            )?;
-        }
-        state.charge_in_realm(
-            user_id,
-            costs,
-            realm.as_ref(),
-            format!(
-                "new {0} [{1}](#/post/{1})",
-                if parent.is_some() { "comment" } else { "post" },
-                future_id
-            ),
-        )?;
 
         let user = state.users.get_mut(&user_id).expect("no user found");
         user.posts.push(future_id);
-        // reorder realms
+        // Auto-join Space when posting to it if not already a member
         if let Some(name) = &realm {
             if user.realms.contains(name) {
                 user.realms.retain(|id| id != name);
                 user.realms.push(name.clone());
+            } else {
+                user.realms.push(name.clone());
+                if let Some(r) = state.realms.get_mut(name) {
+                    r.num_members += 1;
+                }
             }
         }
-        // We count credits spent on new content creation.
-        user.add_burned_credits(costs);
         user.last_activity = timestamp;
         let id = state.new_post_id();
         post.id = id;
@@ -659,7 +663,7 @@ impl Post {
                     post.tree_size += 1;
                     post.tree_update = timestamp;
                     if !controversial {
-                        post.make_hot(user_id, user_balance);
+                        post.make_hot(user_id, 0);
                     }
                     Ok(())
                 })

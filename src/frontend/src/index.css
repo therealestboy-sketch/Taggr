@@ -1,0 +1,167 @@
+@import "tailwindcss";
+
+:root,
+[data-theme="dark"] {
+    --ui-bg: #09090b;
+    --ui-surface: #111114;
+    --ui-surface-2: #18181c;
+    --ui-surface-hover: #1b1b20;
+    --ui-border: #232329;
+    --ui-border-strong: #32323b;
+    --ui-text: #f4f4f5;
+    --ui-text-secondary: #a1a1aa;
+    --ui-text-muted: #71717a;
+    --ui-glass: rgba(9, 9, 11, 0.84);
+    --ui-pill-bg: rgba(255, 255, 255, 0.06);
+    --ui-danger: #ef4444;
+    --ui-danger-soft: rgba(239, 68, 68, 0.14);
+    --ui-success: #22c55e;
+    --ui-accent: #3b82f6;
+    --ui-accent-hover: #2563eb;
+    --ui-accent-soft: rgba(59, 130, 246, 0.14);
+    --ui-accent-text: #ffffff;
+}
+
+[data-theme="light"] {
+    --ui-bg: #ffffff;
+    --ui-surface: #f8fafc;
+    --ui-surface-2: #f1f5f9;
+    --ui-surface-hover: #f4f6f9;
+    --ui-border: #e5e7eb;
+    --ui-border-strong: #cbd5e1;
+    --ui-text: #0f172a;
+    --ui-text-secondary: #475569;
+    --ui-text-muted: #64748b;
+    --ui-glass: rgba(255, 255, 255, 0.88);
+    --ui-pill-bg: rgba(15, 23, 42, 0.05);
+    --ui-danger: #dc2626;
+    --ui-danger-soft: rgba(220, 38, 38, 0.1);
+    --ui-success: #16a34a;
+}
+
+html,
+body {
+    background-color: var(--ui-bg);
+    color: var(--ui-text);
+    font-family:
+        system-ui,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        "Helvetica Neue",
+        Arial,
+        sans-serif;
+    -webkit-font-smoothing: antialiased;
+    transition:
+        background-color 160ms ease,
+        color 160ms ease;
+}
+
+.ui-bg {
+    background-color: var(--ui-bg);
+}
+.ui-surface {
+    background-color: var(--ui-surface);
+}
+.ui-surface-2 {
+    background-color: var(--ui-surface-2);
+}
+.ui-hover:hover {
+    background-color: var(--ui-surface-hover);
+}
+.ui-border {
+    border-color: var(--ui-border);
+}
+.ui-border-strong {
+    border-color: var(--ui-border-strong);
+}
+.ui-text {
+    color: var(--ui-text);
+}
+.ui-text-secondary {
+    color: var(--ui-text-secondary);
+}
+.ui-text-muted {
+    color: var(--ui-text-muted);
+}
+.ui-glass {
+    background-color: var(--ui-glass);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+.ui-accent-bg {
+    background-color: var(--ui-accent);
+    color: var(--ui-accent-text);
+}
+.ui-accent-bg:hover {
+    background-color: var(--ui-accent-hover);
+}
+.ui-accent-text {
+    color: var(--ui-accent);
+}
+.ui-accent-soft {
+    background-color: var(--ui-accent-soft);
+    color: var(--ui-accent);
+}
+.ui-pill {
+    background-color: var(--ui-pill-bg);
+}
+
+/* Markdown content typography inside posts */
+.post-markdown p {
+    margin: 0.35rem 0;
+}
+.post-markdown p:first-child {
+    margin-top: 0;
+}
+.post-markdown p:last-child {
+    margin-bottom: 0;
+}
+.post-markdown pre {
+    background-color: var(--ui-surface-2);
+    border: 1px solid var(--ui-border);
+    border-radius: 0.75rem;
+    padding: 0.75rem;
+    overflow-x: auto;
+    font-size: 0.8125rem;
+    margin: 0.5rem 0;
+}
+.post-markdown code {
+    background-color: var(--ui-surface-2);
+    border-radius: 0.375rem;
+    padding: 0.1rem 0.35rem;
+    font-size: 0.85em;
+}
+.post-markdown pre code {
+    background: transparent;
+    padding: 0;
+}
+.post-markdown blockquote {
+    border-left: 3px solid var(--ui-accent);
+    padding-left: 0.75rem;
+    color: var(--ui-text-secondary);
+    margin: 0.5rem 0;
+}
+.post-markdown ul {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0.4rem 0;
+}
+.post-markdown ol {
+    list-style: decimal;
+    padding-left: 1.25rem;
+    margin: 0.4rem 0;
+}
+.post-markdown a {
+    color: var(--ui-accent);
+}
+.post-markdown a:hover {
+    text-decoration: underline;
+}
+.post-markdown h1,
+.post-markdown h2,
+.post-markdown h3 {
+    font-weight: 700;
+    margin: 0.5rem 0 0.25rem;
+}

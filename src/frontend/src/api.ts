@@ -1,633 +1,218 @@
 import { Principal } from "@icp-sdk/core/principal";
 import {
-    Certificate,
     HttpAgent,
     HttpAgentOptions,
     Identity,
-    lookupResultToBuffer,
     polling,
 } from "@icp-sdk/core/agent";
-import { uint8FromBufLike, IDL, JsonValue } from "@icp-sdk/core/candid";
+import { IDL, JsonValue } from "@icp-sdk/core/candid";
 import { CANISTER_ID } from "./env";
-import { ICP_DEFAULT_FEE, ICP_LEDGER_ID } from "./common";
-import {
-    IcrcLedgerCanister,
-    IcrcTransferError,
-    IcrcAccount,
-    IcrcMetadataResponseEntries,
-} from "@icp-sdk/canisters/ledger/icrc";
-import type { IcrcLedgerDid } from "@icp-sdk/canisters/ledger/icrc";
-import { Icrc1Canister, PostId } from "./types";
-import {
-    CanisterSettingsIDL,
-    emptyCanisterSettings,
-    MANAGEMENT_CANISTER_ID,
-    recoverBucket,
-} from "./user_storage";
+import { PostId, PostMeta, Post } from "./types";
 
 export type Backend = {
     query: <T>(methodName: string, ...args: unknown[]) => Promise<T | null>;
-
-    query_raw: (
-        canisterId: string,
-        methodName: string,
-        arg: Uint8Array,
-        effectiveCanisterId?: Principal,
-    ) => Promise<Uint8Array | null>;
-
-    call_raw: (
-        canisterId: Principal,
-        methodName: string,
-        arg: Uint8Array,
-        effectiveCanisterId?: Principal,
-    ) => Promise<Uint8Array | null>;
-
     call: <T>(methodName: string, ...args: unknown[]) => Promise<T | null>;
-
-    set_emergency_release: (blob: Uint8Array) => Promise<JsonValue | null>;
-
-    unlink_cold_wallet: () => Promise<JsonValue | null>;
-
-    propose_release: (
-        postId: PostId,
-        commit: string,
-        blob: Uint8Array,
-    ) => Promise<JsonValue | null>;
-
     add_post: (
         text: string,
         refs: [string, number, number][],
         parent: number[],
-        realm: string[],
+        space: string[],
         extension: Uint8Array[],
-    ) => Promise<JsonValue | null>;
-
+    ) => Promise<{ Ok?: PostId; Err?: string } | null>;
     edit_post: (
         id: number,
         text: string,
         refs: [string, number, number][],
         patch: string,
-        realm: string[],
-    ) => Promise<JsonValue | null>;
-
-    bucket_write: (bucket: Principal, blob: Uint8Array) => Promise<bigint>;
-
-    bucket_add_session: (
-        bucket: Principal,
-        principal: Principal,
-    ) => Promise<void>;
-
-    bucket_free: (
-        bucket: Principal,
-        segments: [bigint, bigint][],
-    ) => Promise<void>;
-
-    add_bucket_controller: (
-        bucket: Principal,
-        existing: Principal[],
-        added: Principal,
-    ) => Promise<void>;
-
-    // Console-only recovery: prompts for confirmation, then reinstalls the
-    // bucket wasm (install_code, mode reinstall), wiping stable memory and
-    // re-running canister_init with the caller as sole controller. Use when a
-    // bucket is bricked (e.g. its HWM/controllers region was overwritten) but
-    // the caller is still a controller. Callable as `window.api.recover_bucket()`.
-    recover_bucket: () => Promise<boolean>;
-
-    icp_account_balance: (address: string) => Promise<BigInt>;
-
-    account_balance: (
-        token: Principal,
-        account: IcrcAccount,
-    ) => Promise<bigint>;
-
-    icp_transfer: (
-        account: string,
-        e8s: number,
-        memo?: number,
-    ) => Promise<JsonValue | null>;
-
-    icrc_transfer: (
-        token: Principal,
-        recipient: Principal,
-        amount: number,
-        fee: number,
-        memo?: any,
-    ) => Promise<string | number>;
-
-    icrc_metadata: (canisterId: string) => Promise<Icrc1Canister | null>;
+        space: string[],
+    ) => Promise<{ Ok?: null; Err?: string } | null>;
+    upload_media: (
+        blob: Uint8Array,
+    ) => Promise<{ Ok?: [string, bigint, bigint]; Err?: string } | null>;
 };
+
+export function expandMeta([post, meta]: [Post, PostMeta]): Post {
+    return { ...post, meta };
+}
 
 export const ApiGenerator = (
     mainnetMode: boolean,
     identity?: Identity,
 ): Backend => {
-    const defaultPrincipal = Principal.fromText(CANISTER_ID);
+    const canisterIdText = CANISTER_ID;
+    const defaultPrincipal = canisterIdText
+        ? Principal.fromText(canisterIdText)
+        : Principal.anonymous();
     const options: HttpAgentOptions = { identity };
-    if (mainnetMode) options.host = `https://${CANISTER_ID}.ic0.app`;
-    const agent = new HttpAgent(options);
-    if (!mainnetMode)
+    if (mainnetMode && canisterIdText) {
+        options.host = `https://${canisterIdText}.icp0.io`;
+    }
+    const agent = HttpAgent.createSync(options);
+    if (!mainnetMode) {
         agent.fetchRootKey().catch((err) => {
             console.warn(
-                "Unable to fetch root key. Check to ensure that your local replica is running",
+                "Unable to fetch root key. Ensure the local IC network is running.",
+                err,
             );
-            console.error(err);
         });
-
-    const agentCache: Map<string, IcrcLedgerCanister> = new Map();
-    const getIcrcCanister = (canisterId: string) => {
-        const canisterAgent = agentCache.get(canisterId);
-        if (canisterAgent) {
-            return canisterAgent;
-        }
-        const canister = IcrcLedgerCanister.create({
-            canisterId: Principal.from(canisterId),
-            agent,
-        });
-        agentCache.set(canisterId, canister);
-        return canister;
-    };
+    }
 
     const query_raw = async (
-        canisterId = CANISTER_ID,
         methodName: string,
         arg: Uint8Array = new Uint8Array(0),
-        effectiveCanisterId?: Principal,
     ): Promise<Uint8Array | null> => {
-        // The agent has no request timeout, so a stalled gateway can leave a
-        // query pending forever and block bootstrap. Bound each attempt and
-        // retry a couple of times.
-        const withTimeout = <T>(promise: Promise<T>): Promise<T> => {
-            let timer: ReturnType<typeof setTimeout>;
-            const timeout = new Promise<never>((_, reject) => {
-                timer = setTimeout(
-                    () => reject(new Error("query timed out")),
-                    10000,
-                );
-            });
-            return Promise.race([promise, timeout]).finally(() =>
-                clearTimeout(timer),
-            );
-        };
-        const attempts = 3;
-        for (let attempt = 0; attempt < attempts; attempt++) {
+        if (!canisterIdText) return null;
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             try {
-                let response = await withTimeout(
-                    agent.query(
-                        canisterId,
-                        { methodName, arg, effectiveCanisterId },
-                        identity,
-                    ),
-                );
-                if (response.status != "replied") {
-                    console.error(methodName, response);
+                const response = await agent.query(canisterIdText, {
+                    methodName,
+                    arg,
+                });
+                if (response.status !== "replied") {
+                    console.error(`Query ${methodName} failed:`, response);
                     return null;
                 }
-
                 return response.reply.arg;
             } catch (error) {
-                console.error(error);
-                if (attempt === attempts - 1) {
-                    return null;
-                }
-                await new Promise((resolve) => setTimeout(resolve, 1000));
+                console.error(`Query ${methodName} attempt ${attempt}:`, error);
+                if (attempt === maxAttempts) return null;
             }
         }
         return null;
+    };
+
+    const call_raw = async (
+        methodName: string,
+        arg: Uint8Array = new Uint8Array(0),
+    ): Promise<Uint8Array | null> => {
+        if (!canisterIdText) return null;
+        const { requestId, response } = await agent.call(defaultPrincipal, {
+            methodName,
+            arg,
+        });
+        if (!response.ok) {
+            console.error(`Call ${methodName} rejected:`, response);
+            return null;
+        }
+        const pollResponse = await polling.pollForResponse(
+            agent,
+            { canisterId: defaultPrincipal },
+            requestId,
+        );
+        return pollResponse.reply;
     };
 
     const query = async <T>(
         methodName: string,
         ...args: unknown[]
     ): Promise<T | null> => {
-        const response = await query_raw(undefined, methodName, jsonArg(args));
-        if (!response) {
-            return null;
-        }
-        return JSON.parse(Buffer.from(response).toString("utf8"));
-    };
-
-    const call_raw = async (
-        canisterId = defaultPrincipal,
-        methodName: string,
-        arg: Uint8Array,
-        effectiveCanisterId?: Principal,
-    ): Promise<Uint8Array | null> => {
-        // Management canister calls (install_code, update_settings, ...) are
-        // certified for the effective canister, not the management canister
-        // itself; certificate verification fails if the wrong one is used.
-        const target = effectiveCanisterId ?? canisterId;
-        try {
-            let { response, requestId } = await agent.call(canisterId, {
-                methodName,
-                arg,
-                callSync: true,
-                effectiveCanisterId,
-            });
-            if (!response.ok) {
-                console.error(`Call error: ${response.statusText}`);
-                return null;
-            }
-
-            let certificate: Certificate | undefined;
-            if (response.body && "certificate" in response.body) {
-                const cert = response.body.certificate;
-                certificate = await Certificate.create({
-                    certificate: uint8FromBufLike(cert),
-                    rootKey: agent.rootKey || new Uint8Array(0),
-                    principal: { canisterId: Principal.from(target) },
-                });
-                const path = [
-                    new TextEncoder().encode("request_status"),
-                    requestId,
-                ];
-                const status = new TextDecoder().decode(
-                    lookupResultToBuffer(
-                        certificate.lookup_path([...path, "status"]),
-                    ),
-                );
-
-                switch (status) {
-                    case "replied":
-                        return (
-                            lookupResultToBuffer(
-                                certificate.lookup_path([...path, "reply"]),
-                            ) || null
-                        );
-                    case "rejected":
-                        console.error(
-                            `Call rejected: ${response.statusText}; falling back to polling...`,
-                        );
-                }
-            }
-
-            return (
-                await polling.pollForResponse(
-                    agent,
-                    { canisterId: target },
-                    requestId,
-                    {
-                        strategy: polling.defaultStrategy(),
-                    },
-                )
-            ).reply;
-        } catch (error) {
-            console.error(error);
-            return null;
-        }
+        const arg =
+            args.length === 0
+                ? new Uint8Array(0)
+                : new TextEncoder().encode(
+                      JSON.stringify(args.length === 1 ? args[0] : args),
+                  );
+        const reply = await query_raw(methodName, arg);
+        if (!reply || reply.length === 0) return null;
+        return JSON.parse(new TextDecoder().decode(reply)) as T;
     };
 
     const call = async <T>(
         methodName: string,
         ...args: unknown[]
     ): Promise<T | null> => {
-        const responseBytes = await call_raw(
-            undefined,
-            methodName,
-            jsonArg(args),
-        );
-        if (!responseBytes || !responseBytes.byteLength) {
-            return null;
-        }
-        return JSON.parse(Buffer.from(responseBytes).toString("utf8"));
+        const arg =
+            args.length === 0
+                ? new Uint8Array(0)
+                : new TextEncoder().encode(
+                      JSON.stringify(args.length === 1 ? args[0] : args),
+                  );
+        const reply = await call_raw(methodName, arg);
+        if (!reply || reply.length === 0) return null;
+        return JSON.parse(new TextDecoder().decode(reply)) as T;
     };
 
-    const callCandid = async <T>(
-        methodName: string,
-        argTypes: any[],
-        argVals: any[],
-        retTypes: any[],
-        canisterId: Principal = defaultPrincipal,
-    ): Promise<T | null> => {
-        const response = await call_raw(
-            canisterId,
-            methodName,
-            IDL.encode(argTypes, argVals),
+    const add_post = async (
+        text: string,
+        refs: [string, number, number][],
+        parent: number[],
+        space: string[],
+        extension: Uint8Array[],
+    ): Promise<{ Ok?: PostId; Err?: string } | null> => {
+        const arg = IDL.encode(
+            [
+                IDL.Text,
+                IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat64, IDL.Nat64)),
+                IDL.Opt(IDL.Nat64),
+                IDL.Opt(IDL.Text),
+                IDL.Opt(IDL.Vec(IDL.Nat8)),
+            ],
+            [text, refs, parent, space, extension],
         );
-        if (!response) {
-            return null;
+        const reply = await call_raw("add_post", arg);
+        if (!reply) return null;
+        const decoded = IDL.decode(
+            [IDL.Variant({ Ok: IDL.Nat64, Err: IDL.Text })],
+            reply,
+        )[0] as Record<string, JsonValue>;
+        if ("Ok" in decoded) return { Ok: Number(decoded.Ok) };
+        return { Err: String(decoded.Err) };
+    };
+
+    const edit_post = async (
+        id: number,
+        text: string,
+        refs: [string, number, number][],
+        patch: string,
+        space: string[],
+    ): Promise<{ Ok?: null; Err?: string } | null> => {
+        const arg = IDL.encode(
+            [
+                IDL.Nat64,
+                IDL.Text,
+                IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat64, IDL.Nat64)),
+                IDL.Text,
+                IDL.Opt(IDL.Text),
+            ],
+            [id, text, refs, patch, space],
+        );
+        const reply = await call_raw("edit_post", arg);
+        if (!reply) return null;
+        const decoded = IDL.decode(
+            [IDL.Variant({ Ok: IDL.Null, Err: IDL.Text })],
+            reply,
+        )[0] as Record<string, JsonValue>;
+        if ("Ok" in decoded) return { Ok: null };
+        return { Err: String(decoded.Err) };
+    };
+
+    const upload_media = async (
+        blob: Uint8Array,
+    ): Promise<{ Ok?: [string, bigint, bigint]; Err?: string } | null> => {
+        const arg = IDL.encode([IDL.Vec(IDL.Nat8)], [blob]);
+        const reply = await call_raw("upload_media", arg);
+        if (!reply) return null;
+        const decoded = IDL.decode(
+            [
+                IDL.Variant({
+                    Ok: IDL.Tuple(IDL.Text, IDL.Nat64, IDL.Nat64),
+                    Err: IDL.Text,
+                }),
+            ],
+            reply,
+        )[0] as Record<string, unknown>;
+        if ("Ok" in decoded) {
+            return { Ok: decoded.Ok as [string, bigint, bigint] };
         }
-        return IDL.decode(retTypes, response)[0] as T;
+        return { Err: String(decoded.Err) };
     };
 
     return {
         query,
-        query_raw,
-        call_raw,
         call,
-
-        set_emergency_release: (blob: Uint8Array) =>
-            callCandid<JsonValue>(
-                "set_emergency_release",
-                [IDL.Vec(IDL.Nat8)],
-                [blob],
-                [],
-            ),
-
-        unlink_cold_wallet: () =>
-            callCandid<JsonValue>(
-                "unlink_cold_wallet",
-                [],
-                [],
-                [IDL.Variant({ Ok: IDL.Null, Err: IDL.Text })],
-            ),
-
-        propose_release: (postId: PostId, commit: string, blob: Uint8Array) =>
-            callCandid<JsonValue>(
-                "propose_release",
-                [IDL.Nat64, IDL.Text, IDL.Vec(IDL.Nat8)],
-                [postId, commit, blob],
-                [IDL.Variant({ Ok: IDL.Nat32, Err: IDL.Text })],
-            ),
-
-        add_post: (
-            text: string,
-            refs: [string, number, number][],
-            parent: number[],
-            realm: string[],
-            extension: Uint8Array[],
-        ) =>
-            callCandid<JsonValue>(
-                "add_post",
-                [
-                    IDL.Text,
-                    IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat64, IDL.Nat64)),
-                    IDL.Opt(IDL.Nat64),
-                    IDL.Opt(IDL.Text),
-                    IDL.Opt(IDL.Vec(IDL.Nat8)),
-                ],
-                [text, refs, parent, realm, extension],
-                [IDL.Variant({ Ok: IDL.Nat64, Err: IDL.Text })],
-            ),
-        bucket_write: async (
-            bucket: Principal,
-            blob: Uint8Array,
-        ): Promise<bigint> => {
-            // Bucket `write` takes raw bytes and replies with the 8-byte
-            // big-endian offset where the blob was stored.
-            const buf = await call_raw(bucket, "write", blob);
-            if (!buf || buf.byteLength < 8) {
-                throw new Error("bucket.write: short reply");
-            }
-            return new DataView(
-                buf.buffer,
-                buf.byteOffset,
-                buf.byteLength,
-            ).getBigUint64(0, false);
-        },
-        bucket_add_session: async (
-            bucket: Principal,
-            principal: Principal,
-        ): Promise<void> => {
-            const arg = IDL.encode([IDL.Principal], [principal]);
-            const reply = await call_raw(bucket, "add_session", arg);
-            if (reply === null) {
-                throw new Error("bucket.add_session failed (see console)");
-            }
-        },
-        bucket_free: async (
-            bucket: Principal,
-            segments: [bigint, bigint][],
-        ): Promise<void> => {
-            if (segments.length === 0) return;
-            const arg = IDL.encode(
-                [IDL.Vec(IDL.Tuple(IDL.Nat64, IDL.Nat64))],
-                [segments],
-            );
-            await call_raw(bucket, "free", arg);
-        },
-        add_bucket_controller: async (
-            bucket: Principal,
-            existing: Principal[],
-            added: Principal,
-        ): Promise<void> => {
-            const controllers = [
-                ...existing.filter((p) => p.toText() !== added.toText()),
-                added,
-            ];
-            const UpdateSettingsArgs = IDL.Record({
-                canister_id: IDL.Principal,
-                settings: CanisterSettingsIDL,
-                sender_canister_version: IDL.Opt(IDL.Nat64),
-            });
-            const mgmtArg = IDL.encode(
-                [UpdateSettingsArgs],
-                [
-                    {
-                        canister_id: bucket,
-                        settings: {
-                            ...emptyCanisterSettings,
-                            controllers: [controllers],
-                        },
-                        sender_canister_version: [],
-                    },
-                ],
-            );
-            const mgmtResult = await call_raw(
-                MANAGEMENT_CANISTER_ID,
-                "update_settings",
-                mgmtArg,
-                bucket,
-            );
-            if (mgmtResult === null) {
-                throw new Error(
-                    "IC management update_settings failed (see console)",
-                );
-            }
-            const internalArg = IDL.encode(
-                [IDL.Vec(IDL.Principal)],
-                [controllers],
-            );
-            const internalResult = await call_raw(
-                bucket,
-                "update_internal_controllers",
-                internalArg,
-            );
-            if (internalResult === null) {
-                throw new Error(
-                    "bucket.update_internal_controllers failed (see console)",
-                );
-            }
-            // Read the management controllers back and assert the new principal
-            // is present before the caller proceeds; otherwise a silently
-            // mis-applied update would still let the principal change go ahead
-            // and strip the user of all control over the canister.
-            const StatusResult = IDL.Record({
-                settings: IDL.Record({
-                    controllers: IDL.Vec(IDL.Principal),
-                }),
-            });
-            const statusArg = IDL.encode(
-                [IDL.Record({ canister_id: IDL.Principal })],
-                [{ canister_id: bucket }],
-            );
-            const statusBuf = await call_raw(
-                MANAGEMENT_CANISTER_ID,
-                "canister_status",
-                statusArg,
-                bucket,
-            );
-            if (statusBuf === null) {
-                throw new Error(
-                    "IC management canister_status failed (see console)",
-                );
-            }
-            const { settings } = IDL.decode(
-                [StatusResult],
-                statusBuf,
-            )[0] as any;
-            if (
-                !settings.controllers.some(
-                    (p: Principal) => p.toText() === added.toText(),
-                )
-            ) {
-                throw new Error(
-                    "new principal not found in bucket controllers after update",
-                );
-            }
-        },
-        recover_bucket: recoverBucket,
-        edit_post: (
-            id: number,
-            text: string,
-            refs: [string, number, number][],
-            patch: string,
-            realm: string[],
-        ) =>
-            callCandid<JsonValue>(
-                "edit_post",
-                [
-                    IDL.Nat64,
-                    IDL.Text,
-                    IDL.Vec(IDL.Tuple(IDL.Text, IDL.Nat64, IDL.Nat64)),
-                    IDL.Text,
-                    IDL.Opt(IDL.Text),
-                ],
-                [id, text, refs, patch, realm],
-                [IDL.Variant({ Ok: IDL.Null, Err: IDL.Text })],
-            ),
-
-        icp_account_balance: async (address: string): Promise<BigInt> => {
-            const arg = IDL.encode(
-                [IDL.Record({ account: IDL.Vec(IDL.Nat8) })],
-                [{ account: hexToBytes(address) }],
-            );
-            const response = await query_raw(
-                ICP_LEDGER_ID.toString(),
-                "account_balance",
-                arg,
-            );
-
-            if (!response) {
-                return BigInt(-1);
-            }
-            return (
-                IDL.decode([IDL.Record({ e8s: IDL.Nat64 })], response)[0] as any
-            ).e8s;
-        },
-
-        icrc_transfer: async (
-            token: Principal,
-            recipient: Principal,
-            amount: number,
-            fee: number,
-            memo?: Uint8Array,
-        ) => {
-            try {
-                const canister = IcrcLedgerCanister.create({
-                    canisterId: Principal.from(token),
-                    agent,
-                });
-                const response = await canister.transfer({
-                    to: { owner: recipient, subaccount: [] },
-                    amount: BigInt(amount),
-                    fee: BigInt(fee),
-                    memo: memo as any,
-                });
-
-                return response.toString(); // Response is index of transaction
-            } catch (e) {
-                let err = e as unknown as IcrcTransferError<string>;
-                return err.message;
-            }
-        },
-
-        icp_transfer: (account: string, e8s: number, memo = 0) =>
-            callCandid<JsonValue>(
-                "transfer",
-                [
-                    IDL.Record({
-                        to: IDL.Vec(IDL.Nat8),
-                        amount: IDL.Record({ e8s: IDL.Nat64 }),
-                        fee: IDL.Record({ e8s: IDL.Nat64 }),
-                        memo: IDL.Nat64,
-                    }),
-                ],
-                [
-                    {
-                        to: hexToBytes(account),
-                        amount: { e8s },
-                        fee: { e8s: ICP_DEFAULT_FEE },
-                        memo,
-                    },
-                ],
-                [IDL.Variant({ Ok: IDL.Nat64, Err: IDL.Unknown })],
-                ICP_LEDGER_ID,
-            ),
-
-        account_balance: async (
-            token: Principal,
-            account: IcrcAccount,
-        ): Promise<bigint> => {
-            const canister = getIcrcCanister(token.toString());
-            return await canister.balance({
-                certified: false,
-                owner: account.owner,
-                subaccount: account.subaccount,
-            });
-        },
-
-        icrc_metadata: async (canisterId: string) => {
-            const canister = getIcrcCanister(canisterId);
-            const meta = await canister.metadata({
-                certified: false,
-            });
-
-            const m = new Map<IcrcMetadataResponseEntries, IcrcLedgerDid.Value>(
-                meta as any,
-            );
-
-            return {
-                decimals: new Number(
-                    (m.get(IcrcMetadataResponseEntries.DECIMALS) as any).Nat,
-                ).valueOf(),
-                fee: new Number(
-                    (m.get(IcrcMetadataResponseEntries.FEE) as any).Nat,
-                ).valueOf(),
-                logo: (m.get(IcrcMetadataResponseEntries.LOGO) as any)?.Text,
-                name: (m.get(IcrcMetadataResponseEntries.NAME) as any).Text,
-                symbol: (m.get(IcrcMetadataResponseEntries.SYMBOL) as any).Text,
-            };
-        },
+        add_post,
+        edit_post,
+        upload_media,
     };
-};
-
-const jsonArg = (args: unknown[]): Uint8Array =>
-    new TextEncoder().encode(JSON.stringify(getEffParams(args)));
-
-const getEffParams = <T>(args: T[]): T | T[] | null => {
-    const values = args.filter((val) => typeof val != "undefined");
-    if (values.length == 0) return null;
-    if (values.length == 1) {
-        return values[0];
-    }
-    return values;
-};
-
-const hexToBytes = (hex: string): Buffer => {
-    const bytes = [];
-    for (let c = 0; c < hex.length; c += 2)
-        bytes.push(parseInt(hex.slice(c, c + 2), 16));
-    return Buffer.from(bytes);
 };

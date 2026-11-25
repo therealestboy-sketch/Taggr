@@ -1,37 +1,34 @@
 use crate::env::{
     domains::{change_domain_config, DomainConfig},
-    proposals::{Payload, Release},
     realms::{clean_up_realm, Realm, RealmId},
     user::{Mode, UserFilter},
 };
 
 use super::*;
 use env::{
-    canisters::get_full_neuron,
     config::CONFIG,
     post::{Extension, FileRef, Post, PostId},
     user::{User, UserId},
     State,
 };
 use ic_cdk::{
-    api::{self, msg_arg_data as arg_data_raw, msg_reply},
+    api::{self, msg_arg_data as arg_data_raw},
+    call::Call,
     futures::{internals::in_executor_context, spawn},
 };
 use ic_cdk_macros::{init, post_upgrade, pre_upgrade, update};
-use ic_cdk_management_canister::CanisterId;
-use ic_cdk_timers::{set_timer, set_timer_interval};
+use ic_cdk_timers::set_timer_interval;
 use serde_bytes::ByteBuf;
-use std::{collections::HashSet, time::Duration};
+use sha2::{Digest, Sha256};
+use std::convert::TryInto;
+use std::time::Duration;
 
-// Returns the canonical principal (the caller) and checks that it's not anonymous.
 fn canonical_principal() -> Principal {
     let principal = api::msg_caller();
     assert_ne!(principal, Principal::anonymous(), "authentication required");
     principal
 }
 
-/// Returns an error if there is a pending delegate principal;
-/// otherwise returns the raw principal.
 pub fn raw_caller(state: &State) -> Result<Principal, String> {
     let principal = canonical_principal();
     if delegations::resolve_delegation(state, principal).is_some() {
@@ -40,24 +37,33 @@ pub fn raw_caller(state: &State) -> Result<Principal, String> {
     Ok(principal)
 }
 
-/// Returns the principal for the provided delegate.
 fn caller(state: &State) -> Principal {
     let principal = canonical_principal();
     delegations::resolve_delegation(state, principal).unwrap_or(principal)
 }
 
+fn is_supported_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a])
+        || bytes.starts_with(&[0xff, 0xd8, 0xff])
+        || bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || (bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+}
+
 #[init]
 fn init() {
+    let deployer = api::msg_caller();
     mutate(|state| {
         state.memory.init();
+        if deployer != Principal::anonymous() {
+            state.admins.insert(deployer);
+        }
         let now = time();
         state.timers.last_weekly = now;
         state.timers.last_daily = now;
         state.timers.last_hourly = now;
         state.init();
     });
-    set_timer(Duration::from_millis(0), State::fetch_xdr_rate());
-    set_timer(Duration::from_millis(0), env::ethereum::update_eth_key());
     set_timer_interval(Duration::from_secs(15 * 60), || State::chores(api::time()));
 }
 
@@ -68,51 +74,19 @@ fn pre_upgrade() {
 
 #[post_upgrade]
 fn post_upgrade() {
-    // This should prevent accidental deployments of dev or staging releases.
-    #[cfg(any(feature = "dev", feature = "staging"))]
-    {
-        let ids: &str = include_str!("../../canister_ids.json");
-        if ids.contains(&format!(
-            "\"ic\": \"{}\"",
-            &api::canister_self().to_string()
-        )) {
-            panic!("dev or staging feature is enabled!")
-        }
-    }
+    let upgrader = api::msg_caller();
     stable_to_heap_core();
-
+    mutate(|state| {
+        if state.admins.is_empty() && upgrader != Principal::anonymous() {
+            state.admins.insert(upgrader);
+        }
+    });
     set_timer_interval(Duration::from_secs(15 * 60), || State::chores(api::time()));
-    set_timer(Duration::from_millis(0), State::finalize_upgrade());
-
-    sync_post_upgrade_fixtures();
-
-    // post upgrade logic goes here
-
     ic_cdk::println!(
         "Post-upgrade spent {}B instructions",
         performance_counter(0) / 1000000000
-    )
+    );
 }
-
-#[allow(clippy::all)]
-fn sync_post_upgrade_fixtures() {
-    // Idempotent, and the only seed for the canonical host after a reinstall or
-    // a restore of a snapshot older than the `.icp.net` migration.
-    let canonical_domain = format!("{}.icp.net", id());
-    mutate(|state| {
-        state
-            .domains
-            .entry(canonical_domain)
-            .or_insert_with(|| DomainConfig {
-                max_downvotes: CONFIG.default_max_downvotes,
-                ..Default::default()
-            });
-    });
-}
-
-/*
- * UPDATES
- */
 
 #[cfg(not(feature = "dev"))]
 #[update]
@@ -120,11 +94,64 @@ fn prod_release() -> bool {
     true
 }
 
-/// Fetches the full neuron info of the TaggrDAO proving the neuron decentralization
-/// and voting via hot-key capabilities.
+/// Uploads a validated image to the shared app-managed media bucket, enforcing
+/// per-image size caps, MIME magic bytes, and per-user storage quotas.
 #[update]
-async fn get_neuron_info() -> Result<String, String> {
-    get_full_neuron(CONFIG.neuron_id).await
+async fn upload_media(blob: ByteBuf) -> Result<(String, u64, u64), String> {
+    let principal = read(caller);
+    let len = blob.len() as u64;
+    if len == 0 {
+        return Err("empty file".into());
+    }
+    if blob.len() > CONFIG.max_blob_size_bytes {
+        return Err(format!(
+            "image too large (maximum {} KB)",
+            CONFIG.max_blob_size_bytes / 1024
+        ));
+    }
+    if !is_supported_image(&blob) {
+        return Err("unsupported image format (PNG, JPEG, GIF, or WebP required)".into());
+    }
+
+    let (user_id, bucket) = read(|state| {
+        let user = state.principal_to_user(principal).ok_or("user not found")?;
+        if user.deactivated {
+            return Err("account suspended".to_string());
+        }
+        let is_admin = state.is_admin(principal);
+        let used = state.user_storage_bytes.get(&user.id).copied().unwrap_or(0);
+        if !is_admin && used.saturating_add(len) > CONFIG.max_user_storage_bytes {
+            return Err(format!(
+                "media storage quota reached ({} MB limit)",
+                CONFIG.max_user_storage_bytes / (1024 * 1024)
+            ));
+        }
+        let bucket = state
+            .media_bucket
+            .ok_or("shared media bucket is not configured yet")?;
+        Ok((user.id, bucket))
+    })?;
+
+    let response = Call::unbounded_wait(bucket, "write")
+        .with_raw_args(&blob)
+        .await
+        .map_err(|err| format!("media upload failed: {:?}", err))?;
+    let offset_bytes = response.into_bytes();
+    if offset_bytes.len() != 8 {
+        return Err("invalid offset returned by media bucket".into());
+    }
+    let offset = u64::from_be_bytes(offset_bytes.try_into().expect("8 bytes"));
+
+    mutate(|state| {
+        *state.user_storage_bytes.entry(user_id).or_default() += len;
+    });
+
+    let mut hasher = Sha256::new();
+    hasher.update(&blob);
+    let hash_hex = hex::encode(hasher.finalize());
+    let blob_id = hash_hex[..16].to_string();
+
+    Ok((blob_id, offset, len))
 }
 
 #[export_name = "canister_update set_delegation"]
@@ -157,22 +184,6 @@ fn vote_on_poll() {
     });
 }
 
-#[export_name = "canister_update report"]
-fn report() {
-    mutate(|state| {
-        let (id, reason): (u64, String) = parse(&arg_data_raw());
-        reply(reports::report(state, caller(state), id, reason))
-    });
-}
-
-#[export_name = "canister_update vote_on_report"]
-fn vote_on_report() {
-    mutate(|state| {
-        let (id, vote): (u64, bool) = parse(&arg_data_raw());
-        reply(reports::vote_on_report(state, caller(state), id, vote))
-    });
-}
-
 #[export_name = "canister_update clear_notifications"]
 fn clear_notifications() {
     mutate(|state| {
@@ -185,61 +196,6 @@ fn clear_notifications() {
             None => Err("user not found".to_string()),
         });
     })
-}
-
-#[export_name = "canister_update crypt"]
-fn crypt() {
-    let seed: String = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        state.toggle_account_activation(raw_caller(state)?, seed)
-    }))
-}
-
-#[update]
-fn link_cold_wallet(user_id: UserId) -> Result<(), String> {
-    mutate(|state| state.link_cold_wallet(raw_caller(state)?, user_id))
-}
-
-#[update]
-fn unlink_cold_wallet() -> Result<(), String> {
-    mutate(|state| state.unlink_cold_wallet(raw_caller(state)?))
-}
-
-/// Registers the caller's personal media bucket. Performs no verification — a
-/// misconfigured bucket only impairs the user's own posts. No-op if a bucket
-/// is already registered, to prevent accidental rebinding.
-#[export_name = "canister_update set_bucket"]
-fn set_bucket() {
-    let bucket_id: String = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        let principal = raw_caller(state)?;
-        let bucket = Principal::from_text(&bucket_id).map_err(|err| err.to_string())?;
-        let user = state
-            .principal_to_user_mut(principal)
-            .ok_or("user not found")?;
-        if user.bucket.is_some() {
-            return Ok::<(), String>(());
-        }
-        user.bucket = Some(bucket);
-        Ok::<(), String>(())
-    }));
-}
-
-#[export_name = "canister_update withdraw_rewards"]
-fn withdraw_rewards() {
-    in_executor_context(|| {
-        spawn(async {
-            reply(State::withdraw_rewards(read(caller)).await);
-        })
-    })
-}
-
-#[export_name = "canister_update tip"]
-fn tip() {
-    let (post_id, amount): (PostId, u64) = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        state.tip(raw_caller(state)?, post_id, amount)
-    }));
 }
 
 #[export_name = "canister_update react"]
@@ -259,19 +215,6 @@ fn update_last_activity() {
             None => Err("user not found".to_string()),
         });
     });
-}
-
-#[export_name = "canister_update request_principal_change"]
-fn request_principal_change() {
-    let new_principal: String = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        state.request_principal_change(raw_caller(state)?, new_principal)
-    }))
-}
-
-#[export_name = "canister_update confirm_principal_change"]
-fn confirm_principal_change() {
-    reply(mutate(|state| state.change_principal(raw_caller(state)?)));
 }
 
 #[export_name = "canister_update update_user"]
@@ -301,12 +244,6 @@ fn update_user_settings() {
     reply(User::update_settings(read(caller), settings))
 }
 
-#[export_name = "canister_update update_wallet_tokens"]
-fn update_wallet_tokens() {
-    let ids: HashSet<CanisterId> = parse(&arg_data_raw());
-    reply(User::update_wallet_tokens(read(caller), ids))
-}
-
 #[export_name = "canister_update create_user"]
 fn create_user() {
     let (name, invite): (String, String) = parse(&arg_data_raw());
@@ -318,119 +255,6 @@ fn create_user() {
             })
         })
     });
-}
-
-#[export_name = "canister_update transfer_credits"]
-fn transfer_credits() {
-    let (recipient, amount): (UserId, Credits) = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        let sender = state
-            .principal_to_user(caller(state))
-            .ok_or("user not found")?;
-
-        sender.validate_send_credits(state)?;
-
-        let recipient_name = &state.users.get(&recipient).ok_or("user not found")?.name;
-        state.credit_transfer(
-            sender.id,
-            recipient,
-            amount,
-            CONFIG.credit_transaction_fee,
-            Destination::Credits,
-            format!(
-                "credit transfer from @{} to @{}",
-                sender.name, recipient_name
-            ),
-            Some(format!(
-                "You have received `{}` credits from @{}",
-                amount, sender.name
-            )),
-        )
-    }))
-}
-
-#[export_name = "canister_update mint_credits_with_icp"]
-fn mint_credits_with_icp() {
-    in_executor_context(|| {
-        spawn(async {
-            let kilo_credits: u64 = parse(&arg_data_raw());
-            reply(State::mint_credits_with_icp(read(caller), kilo_credits).await)
-        })
-    });
-}
-
-#[export_name = "canister_update bridge_out"]
-fn bridge_out() {
-    in_executor_context(|| {
-        spawn(async {
-            let (amount, eth_address): (u64, String) = parse(&arg_data_raw());
-            reply(State::bridge_out(read(caller), amount, eth_address).await);
-        })
-    });
-}
-
-#[export_name = "canister_update create_invite"]
-fn create_invite() {
-    let (credits, credits_per_user, realm_id): (Credits, Option<Credits>, Option<RealmId>) =
-        parse(&arg_data_raw());
-    mutate(|state| reply(state.create_invite(caller(state), credits, credits_per_user, realm_id)));
-}
-
-#[export_name = "canister_update update_invite"]
-fn update_invite() {
-    let (invite_code, credits, realm_id): (String, Option<Credits>, Option<RealmId>) =
-        parse(&arg_data_raw());
-
-    mutate(|state| reply(state.update_invite(caller(state), invite_code, credits, realm_id)));
-}
-
-#[export_name = "canister_update delay_weekly_chores"]
-fn delay_weekly_chores() {
-    reply(Ok::<bool, String>(mutate(|state| {
-        state.delay_weekly_chores(caller(state))
-    })))
-}
-
-#[export_name = "canister_update create_proposal"]
-fn create_proposal() {
-    let (post_id, payload): (PostId, Payload) = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        proposals::create_proposal(state, raw_caller(state)?, post_id, payload, time())
-    }))
-}
-
-#[update]
-fn propose_release(post_id: PostId, commit: String, binary: ByteBuf) -> Result<u32, String> {
-    mutate(|state| {
-        proposals::create_proposal(
-            state,
-            raw_caller(state)?,
-            post_id,
-            proposals::Payload::Release(Release {
-                commit,
-                binary: binary.to_vec(),
-                hash: Default::default(),
-            }),
-            time(),
-        )
-    })
-}
-
-#[export_name = "canister_update vote_on_proposal"]
-fn vote_on_proposal() {
-    let (proposal_id, vote, data): (u32, bool, String) = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        proposals::vote_on_proposal(state, time(), raw_caller(state)?, proposal_id, vote, &data)
-    }))
-}
-
-#[export_name = "canister_update cancel_proposal"]
-fn cancel_proposal() {
-    let proposal_id: u32 = parse(&arg_data_raw());
-    reply(mutate(|state| {
-        proposals::cancel_proposal(state, raw_caller(state)?, proposal_id);
-        Ok::<(), String>(())
-    }));
 }
 
 #[update]
@@ -610,68 +434,44 @@ fn toggle_filter() {
     })
 }
 
+#[export_name = "canister_update admin_toggle_ban_user"]
+fn admin_toggle_ban_user() {
+    let user_id: UserId = parse(&arg_data_raw());
+    mutate(|state| reply(state.admin_toggle_ban_user(caller(state), user_id)))
+}
+
+#[export_name = "canister_update admin_delete_space"]
+fn admin_delete_space() {
+    let space_id: RealmId = parse(&arg_data_raw());
+    mutate(|state| reply(state.admin_delete_space(caller(state), space_id)))
+}
+
+#[export_name = "canister_update admin_set_media_bucket"]
+fn admin_set_media_bucket() {
+    let bucket_id: String = parse(&arg_data_raw());
+    mutate(|state| reply(state.admin_set_media_bucket(caller(state), bucket_id)))
+}
+
+#[export_name = "canister_update admin_add_domain"]
+fn admin_add_domain() {
+    let domain: String = parse(&arg_data_raw());
+    mutate(|state| reply(state.admin_add_domain(caller(state), domain)))
+}
+
+#[export_name = "canister_update admin_add_admin"]
+fn admin_add_admin() {
+    let new_admin: String = parse(&arg_data_raw());
+    mutate(|state| reply(state.admin_add_admin(caller(state), new_admin)))
+}
+
 #[update]
-async fn set_emergency_release(binary: ByteBuf) {
-    mutate(|state| {
-        if binary.is_empty()
-            || state
-                .principal_to_user(raw_caller(state).unwrap())
-                .map(|user| {
-                    user.account_age(WEEK) < CONFIG.min_stalwart_account_age_weeks
-                        || user.total_balance()
-                            < CONFIG.min_emergency_release_tokens * token::base()
-                })
-                .unwrap_or(true)
-        {
-            return;
-        }
-        state.emergency_binary = binary.to_vec();
-        state.emergency_votes.clear();
-    });
+fn set_media_bucket(bucket_id: String) -> Result<(), String> {
+    mutate(|state| state.admin_set_media_bucket(canonical_principal(), bucket_id))
 }
 
-#[export_name = "canister_update confirm_emergency_release"]
-fn confirm_emergency_release() {
-    mutate(|state| {
-        let principal = raw_caller(state).unwrap();
-        if let Some(user) = state.principal_to_user(principal) {
-            let user_balance = user.balance;
-            let user_cold_balance = user.cold_balance;
-            let user_cold_wallet = user.cold_wallet;
-            let hash: String = parse(&arg_data_raw());
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(&state.emergency_binary);
-            if hash == format!("{:x}", hasher.finalize()) {
-                state.emergency_votes.insert(principal, user_balance);
-                if let Some(principal) = user_cold_wallet {
-                    state.emergency_votes.insert(principal, user_cold_balance);
-                }
-            }
-        }
-        msg_reply([]);
-    })
-}
-
-// This function is the last resort of triggering the emergency upgrade and is expected to be used.
 #[update]
-fn force_emergency_upgrade() -> bool {
-    mutate(|state| state.execute_pending_emergency_upgrade(true))
-}
-
-#[export_name = "canister_update create_bid"]
-fn create_bid() {
-    in_executor_context(|| {
-        spawn(async {
-            let (amount, e8s_per_token): (u64, u64) = parse(&arg_data_raw());
-            reply(auction::create_bid(read(caller), amount, e8s_per_token).await)
-        })
-    });
-}
-
-#[export_name = "canister_update cancel_bid"]
-fn cancel_bid() {
-    in_executor_context(|| spawn(async { reply(auction::cancel_bid(read(caller)).await) }));
+fn add_admin(principal: String) -> Result<(), String> {
+    mutate(|state| state.admin_add_admin(canonical_principal(), principal))
 }
 
 #[update]
@@ -712,7 +512,6 @@ fn check_candid_interface_compatibility() {
     candid::export_service!();
     let new_interface = __export_service();
 
-    // check the public interface against the actual one
     let old_interface =
         std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("taggr.did");
 

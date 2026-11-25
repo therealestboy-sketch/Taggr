@@ -143,7 +143,7 @@ impl User {
     }
 
     pub fn account_age(&self, units: u64) -> u64 {
-        (time() - self.timestamp) / units
+        time().saturating_sub(self.timestamp) / units
     }
 
     pub fn get_filter(&self) -> UserFilter {
@@ -724,7 +724,7 @@ impl User {
 pub async fn create_user(
     principal: Principal,
     name: String,
-    invite_code: Option<String>,
+    _invite_code: Option<String>,
 ) -> Result<Option<RealmId>, String> {
     // Validations.
     read(|state| {
@@ -735,22 +735,8 @@ pub async fn create_user(
         Ok(())
     })?;
 
-    if let Some(code) = invite_code {
-        return create_user_from_invite(principal, name, code);
-    }
-
-    let paid_icp_invoice = read(|state| state.accounting.has_paid_icp_invoice(&principal));
-
-    if !paid_icp_invoice {
-        return Err("payment missing".to_string());
-    }
-
     mutate(|state| state.new_user(principal, time(), name, None))?;
-
-    // After the user has beed created, transfer credits.
-    State::mint_credits_with_icp(principal, 0)
-        .await
-        .map(|_| None)
+    Ok(None)
 }
 
 fn create_user_from_invite(

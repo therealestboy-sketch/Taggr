@@ -8,25 +8,34 @@ start:
 	ulimit -n 65000 && (icp network ping >/dev/null 2>&1 || icp network start -d)
 
 cycles:
-	icp canister top-up taggr --amount 100T
+	icp canister top-up relay --amount 100T
+	icp canister top-up bucket --amount 100T
+
+mainnet_deploy:
+	NODE_ENV=production DFX_NETWORK=ic make fe
+	icp deploy -e ic relay
+	icp deploy -e ic bucket
 
 staging_deploy:
-	NODE_ENV=production DFX_NETWORK=$(if $(CANISTER),$(CANISTER),staging) make fe
-	FEATURES=staging icp deploy -e $(if $(CANISTER),$(CANISTER),staging) taggr --identity prod
+	NODE_ENV=production DFX_NETWORK=staging make fe
+	FEATURES=staging icp deploy -e staging relay
+	icp deploy -e staging bucket
 
 local_deploy:
-	FEATURES=dev icp deploy taggr
+	NODE_ENV=production DFX_NETWORK=local make fe
+	FEATURES=dev icp deploy relay
+	icp deploy bucket
 
 dev_build:
 	FEATURES=dev ./build.sh bucket
-	FEATURES=dev icp build taggr
+	FEATURES=dev icp build relay
 
 local_reinstall:
-	make fe
-	FEATURES=dev icp deploy --mode=reinstall taggr -y
+	NODE_ENV=production DFX_NETWORK=local make fe
+	FEATURES=dev icp deploy --mode=reinstall relay -y
 
 build:
-	NODE_ENV=production make fe
+	NODE_ENV=production DFX_NETWORK=ic make fe
 	./build.sh bucket
 	./build.sh taggr
 

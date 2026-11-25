@@ -36,22 +36,17 @@ pub fn load(domains: &HashMap<String, DomainConfig>) {
         ASSETS = Some(Default::default());
     }
 
-    let dao_owned_domain = domains
+    let primary_domain = domains
         .iter()
-        .find(|(_, cfg)| cfg.owner.is_none())
-        .map(|(domain, _)| domain)
-        .expect("no DAO domains");
+        .find(|(d, cfg)| cfg.owner.is_none() && d.ends_with(".icp0.io"))
+        .or_else(|| domains.iter().find(|(_, cfg)| cfg.owner.is_none()))
+        .map(|(domain, _)| domain.as_str())
+        .unwrap_or("localhost");
 
     add_asset(
         &["/", "/index.html"],
         index_html_headers(),
-        set_index_metadata(dao_owned_domain, INDEX_HTML),
-    );
-
-    add_asset(
-        &["/ios-auth-callback"],
-        vec![("Content-Type".into(), "text/html; charset=UTF-8".into())],
-        b"<!doctype html><meta charset=\"utf-8\"><title>TAGGR sign-in</title><p>Authentication complete. You can return to TAGGR.</p>".to_vec(),
+        set_index_metadata(primary_domain, INDEX_HTML),
     );
 
     add_asset(
@@ -82,33 +77,9 @@ pub fn load(domains: &HashMap<String, DomainConfig>) {
     );
 
     add_asset(
-        &["/_/raw/social-image.webp"],
-        vec![("Content-Type".into(), "image/webp".into())],
-        include_bytes!("../../src/frontend/assets/social-image.webp").to_vec(),
-    );
-
-    add_asset(
-        &["/WHITEPAPER.md"],
-        vec![("Content-Type".into(), "text/markdown".into())],
-        include_bytes!("../../src/frontend/assets/WHITEPAPER.md").to_vec(),
-    );
-
-    add_asset(
-        &["/SKILL.md"],
-        vec![("Content-Type".into(), "text/markdown".into())],
-        include_bytes!("../../src/frontend/assets/SKILL.md").to_vec(),
-    );
-
-    add_asset(
         &["/manifest.json"],
         vec![("Content-Type".into(), "application/json".into())],
         include_bytes!("../../src/frontend/assets/manifest.json").to_vec(),
-    );
-
-    add_asset(
-        &["/.well-known/apple-app-site-association"],
-        vec![("Content-Type".into(), "application/json".into())],
-        include_bytes!("../../src/frontend/assets/.well-known/apple-app-site-association").to_vec(),
     );
 
     add_asset(
@@ -124,43 +95,9 @@ pub fn load(domains: &HashMap<String, DomainConfig>) {
         .to_vec(),
     );
 
-    // Service discoverability: declare the app's composition so an agent handed
-    // only the origin can find the canister and its API.
-    add_asset(
-        &["/.well-known/ic-architecture"],
-        vec![("Content-Type".into(), "application/json".into())],
-        serde_json::json!({
-            "version": "1.0.0",
-            "canisters": [{
-                "id": id().to_string(),
-                "name": "taggr",
-                "role": "the app: frontend assets, social network API and ICRC-1 token",
-                "description": "call get_api_doc() first; most query methods take and return JSON, not Candid",
-            }],
-        })
-        .to_string()
-        .into_bytes(),
-    );
-
-    add_asset(
-        &["/.well-known/ii-auth-callbacks"],
-        vec![
-            ("Content-Type".into(), "application/json".into()),
-            ("Access-Control-Allow-Origin".into(), "*".into()),
-        ],
-        ii_auth_callbacks().into_bytes(),
-    );
-
     add_domains(domains);
 
     certify();
-}
-
-fn ii_auth_callbacks() -> String {
-    serde_json::json!({
-        "callbacks": [format!("https://{}.icp0.io/ios-auth-callback", id())]
-    })
-    .to_string()
 }
 
 pub fn add_domains(domains: &HashMap<String, DomainConfig>) {
@@ -169,6 +106,7 @@ pub fn add_domains(domains: &HashMap<String, DomainConfig>) {
         Default::default(),
         domains
             .keys()
+            .filter(|d| *d != "localhost")
             .cloned()
             .collect::<Vec<_>>()
             .join("\n")
@@ -238,51 +176,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_icrc_167_callback_declaration_and_terminal_page() {
-        let domains = HashMap::from([("taggr.link".to_string(), DomainConfig::default())]);
+    fn loads_certified_assets_and_domains() {
+        let domains = HashMap::from([("example.icp0.io".to_string(), DomainConfig::default())]);
         load(&domains);
 
-        let (headers, body) =
-            asset("/.well-known/ii-auth-callbacks").expect("callback declaration");
-        assert!(headers.contains(&("Content-Type".into(), "application/json".into())));
-        assert!(headers.contains(&("Access-Control-Allow-Origin".into(), "*".into())));
-        let value: serde_json::Value = serde_json::from_slice(&body).expect("valid callback JSON");
-        assert_eq!(
-            value,
-            serde_json::json!({
-                "callbacks": [
-                    "https://6qfxa-ryaaa-aaaai-qbhsq-cai.icp0.io/ios-auth-callback"
-                ]
-            })
-        );
-
-        let (headers, body) = asset("/ios-auth-callback").expect("terminal callback page");
-        assert!(headers.contains(&("Content-Type".into(), "text/html; charset=UTF-8".into())));
-        assert!(String::from_utf8_lossy(&body).contains("Authentication complete"));
-        assert_ne!(asset_hashes().get(b"/.well-known/ii-auth-callbacks"), None);
-        assert_ne!(asset_hashes().get(b"/ios-auth-callback"), None);
-
-        let (headers, body) = asset("/SKILL.md").expect("agent skill");
-        assert!(headers.contains(&("Content-Type".into(), "text/markdown".into())));
-        assert!(String::from_utf8_lossy(&body).contains("name: taggr"));
-        assert_ne!(asset_hashes().get(b"/SKILL.md"), None);
-
-        let (headers, body) = asset("/.well-known/ic-architecture").expect("manifest");
+        let (headers, body) = asset("/manifest.json").expect("manifest");
         assert!(headers.contains(&("Content-Type".into(), "application/json".into())));
         let value: serde_json::Value = serde_json::from_slice(&body).expect("valid manifest JSON");
-        assert_eq!(value["version"], "1.0.0");
-        assert_eq!(value["canisters"][0]["id"], "6qfxa-ryaaa-aaaai-qbhsq-cai");
-        assert_ne!(asset_hashes().get(b"/.well-known/ic-architecture"), None);
+        assert_eq!(value["name"], "Relay");
+        assert_ne!(asset_hashes().get(b"/manifest.json"), None);
 
-        let (_, body) = asset("/.well-known/apple-app-site-association").expect("AASA");
-        let value: serde_json::Value = serde_json::from_slice(&body).expect("valid AASA JSON");
-        assert_eq!(
-            value["applinks"]["details"][0]["paths"],
-            serde_json::json!(["/*"])
-        );
-        assert_eq!(
-            value["webcredentials"]["apps"],
-            serde_json::json!(["AKN976G7AK.network.taggr.ios"])
-        );
+        let (_, ic_domains) = asset("/.well-known/ic-domains").expect("ic-domains");
+        assert_eq!(String::from_utf8_lossy(&ic_domains), "example.icp0.io");
     }
 }

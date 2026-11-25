@@ -1,510 +1,72 @@
-import * as React from "react";
-import { AuthClient } from "@icp-sdk/auth/client";
-import { Ed25519KeyIdentity } from "@icp-sdk/core/identity";
+import React from "react";
 import { createRoot } from "react-dom/client";
-import { PostView } from "./post";
-import { PostFeed } from "./post_feed";
-import { Feed } from "./feed";
-import { Thread } from "./thread";
-import { Invites } from "./invites";
-import { Inbox } from "./inbox";
-import { Journal } from "./journal";
-import { RealmForm, Realms } from "./realms";
-import { Dashboard } from "./dashboard";
-import { PostSubmissionForm } from "./new";
-import { Profile } from "./profile";
-import { Landing } from "./landing";
-import { Header } from "./header";
-import {
-    Unauthorized,
-    microSecsSince,
-    HeadBar,
-    setTitle,
-    currentRealm,
-    loadFeed,
-    expandMeta,
-    handleError,
-    domain,
-    onCanonicalDomain,
-    getCanonicalDomain,
-    showPopUp,
-} from "./common";
-import { Settings } from "./settings";
-import { Welcome } from "./welcome";
-import { Proposals } from "./proposals";
-import { Tokens, TransactionView, TransactionsView } from "./tokens";
-import { Whitepaper } from "./whitepaper";
-import { Recovery } from "./recovery";
-import {
-    Config,
-    User,
-    Stats,
-    DomainConfig,
-    getMonoRealm,
-    getJournal,
-} from "./types";
-import { setRealmUI, setUI } from "./theme";
-import { Search, safeDecode } from "./search";
-import { Distribution } from "./distribution";
-import { Ethereum } from "./ethereum";
-import { populateUserNameCache } from "./user_resolve";
-import { LinksPage } from "./links";
-import { ApiGenerator } from "./api";
-import { MAINNET_MODE } from "./env";
-import { Domains } from "./domains";
-import {
-    Delegate,
-    DELEGATION_DOMAIN,
-    DELEGATION_PRINCIPAL,
-} from "./delegation";
-import { LoginMasks } from "./authentication";
-import { maybePromptTopUp } from "./user_storage";
+import "./index.css";
+import { AppProvider } from "./app-context";
+import { BRAND } from "./brand";
+import { AuthOnboardingModal } from "./components/AuthOnboardingModal";
+import { CreateSpaceModal } from "./components/CreateSpaceModal";
+import { Layout } from "./components/Layout";
+import { BookmarksPage } from "./pages/BookmarksPage";
+import { ExplorePage } from "./pages/ExplorePage";
+import { HomePage } from "./pages/HomePage";
+import { NotificationsPage } from "./pages/NotificationsPage";
+import { ProfilePage } from "./pages/ProfilePage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { SpacesPage } from "./pages/SpacesPage";
+import { ThreadPage } from "./pages/ThreadPage";
+import { useRoute } from "./router";
 
-const { hash, pathname } = location;
-
-if (!hash && pathname != "/") {
-    location.href = `#${pathname}`;
+// Redirect direct path visits (e.g. /post/12 from OG links) to hash routes
+if (!window.location.hash && window.location.pathname !== "/") {
+    window.location.replace(`/#${window.location.pathname}`);
 }
 
-const REFRESH_RATE_SECS = 10 * 60;
+document.title = BRAND.name;
 
-const parseHash = (): string[] => {
-    const parts = window.location.hash.replace("#", "").split("/");
-    parts.shift();
-    return parts.map(decodeURI);
-};
+const AppRoutes: React.FC = () => {
+    const route = useRoute();
 
-const headerRoot = createRoot(document.getElementById("header") as Element);
-const footerRoot = createRoot(document.getElementById("footer") as Element);
-const stack = document.getElementById("stack") as HTMLElement;
-
-const dropFrame = (frame: Element) => {
-    (frame as any).root?.unmount();
-    frame.remove();
-};
-
-const renderFrame = (content: React.ReactNode) => {
-    document.getElementById("logo_container")?.remove();
-
-    // This resets the stack.
-    if (location.hash == "#/home") {
-        window.resetUI();
-        location.href = "#/";
-        return;
-    }
-
-    const frames = Array.from(stack.children as HTMLCollectionOf<HTMLElement>);
-    frames.forEach((e) => (e.style.display = "none"));
-    const currentFrame = frames[frames.length - 1];
-    const lastFrame = frames[frames.length - 2];
-
-    if (lastFrame && lastFrame.dataset.hash == location.hash) {
-        dropFrame(currentFrame);
-        lastFrame.style.display = "block";
-        return;
-    }
-
-    const frame = document.createElement("div");
-    frame.dataset.hash = location.hash;
-    stack.appendChild(frame);
-    const root = createRoot(frame);
-    (frame as any).root = root;
-    root.render(content);
-};
-
-const App = () => {
-    window.lastActivity = new Date();
-    const auth = (content: React.ReactNode) =>
-        window.principalId ? content : <Unauthorized />;
-    let [handler = "", param = "", param2 = ""] = parseHash();
-
-    let headerStyle;
-    let inboxMode = false;
-    let content = null;
-
-    const journal = getJournal(window.backendCache.domains[domain()]);
-    if (!handler && journal != null) {
-        handler = "journal";
-        param = journal.toString();
-    }
-    // If we're in a realm, but navigate outside of realm routes, reset the UI.
-    else if (
-        currentRealm() &&
-        !window.hideRealmless &&
-        ["#/realm/", "#/feed", "#/post/", "#/thread", "#/new"].every(
-            (prefix: string) => !location.hash.startsWith(prefix),
-        )
-    ) {
-        window.realm = "";
-        window.uiInitialized = false;
-    }
-
-    setTitle(handler);
-    if (window.monoRealm) setRealmUI(window.monoRealm);
-    else if (handler == "realm" && currentRealm() != param) {
-        setRealmUI(param.toUpperCase());
-    } else setUI();
-
-    if (handler == "whitepaper") {
-        content = <Whitepaper />;
-    } else if (handler == "settings") {
-        content = auth(<Settings tab={param} />);
-    } else if (handler == "sign-in") {
-        headerStyle = "minimal";
-        content = <LoginMasks />;
-    } else if (handler == "sign-up") {
-        headerStyle = "minimal";
-        content = window.principalId ? (
-            <Welcome />
-        ) : (
-            <LoginMasks signUp={true} />
-        );
-    } else if (handler == "welcome") {
-        if (MAINNET_MODE && !onCanonicalDomain()) {
-            location.href = `https://${getCanonicalDomain()}/#/welcome/${param}`;
-            return;
-        }
-        // Redirect signed-in users to home
-        if (window.user) {
-            location.href = "#/";
-            return;
-        }
-        headerStyle = "hidden";
-        content = window.principalId ? (
-            <Settings invite={param} />
-        ) : (
-            <LoginMasks invite={true} signUp={true} />
-        );
-    } else if (handler == "post") {
-        const id = parseInt(param);
-        const version = parseInt(param2);
-        headerStyle = "minimal";
-        content = <PostView id={id} version={version} prime={true} />;
-    } else if (handler == "reposts") {
-        const id = parseInt(param);
-        content = (
-            <PostFeed
-                title={
-                    <HeadBar
-                        title={
-                            <>
-                                Reposts of <a href={`#/post/${id}`}>#{id}</a>
-                            </>
-                        }
-                        shareLink={`/reposts/${id}`}
-                    />
-                }
-                feedLoader={async () => {
-                    const posts = await loadFeed([id]);
-                    if (posts && posts.length > 0)
-                        return await loadFeed(expandMeta(posts[0]).reposts);
-                    return [];
-                }}
-            />
-        );
-    } else if (handler == "edit") {
-        const id = parseInt(param);
-        content = auth(<PostSubmissionForm id={id} />);
-    } else if (handler == "new") {
-        headerStyle = "minimal";
-        const postId = parseInt(param2);
-        content = auth(
-            <PostSubmissionForm repost={isNaN(postId) ? undefined : postId} />,
-        );
-    } else if (handler == "realms") {
-        if (param == "create") content = auth(<RealmForm />);
-        else content = <Realms />;
-    } else if (handler == "realm") {
-        if (param) {
-            if (param2 == "edit")
-                content = auth(
-                    <RealmForm existingName={param.toUpperCase()} />,
-                );
-            else content = <Landing />;
-        } else content = <Realms />;
-    } else if (handler == "inbox") {
-        content = auth(<Inbox />);
-        inboxMode = true;
-    } else if (handler == "delegate") {
-        headerStyle = "minimal";
-        if (param) localStorage.setItem(DELEGATION_DOMAIN, param);
-        if (param2) localStorage.setItem(DELEGATION_PRINCIPAL, param2);
-        content = window.user ? <Delegate /> : <LoginMasks />;
-    } else if (handler == "transaction") {
-        content = <TransactionView id={parseInt(param)} />;
-    } else if (handler == "transactions") {
-        content = <TransactionsView icrcAccount={param} prime={true} />;
-    } else if (handler == "proposals") {
-        content = <Proposals />;
-    } else if (handler == "tokens") {
-        content = <Tokens />;
-    } else if (handler == "ethereum") {
-        content = <Ethereum />;
-    } else if (handler == "dashboard" || handler == "stats") {
-        content = <Dashboard />;
-    } else if (handler == "search") {
-        content = <Search initQuery={param} />;
-    } else if (handler == "domains") {
-        content = <Domains />;
-    } else if (handler == "links") {
-        content = <LinksPage />;
-    } else if (handler == "distribution") {
-        content = <Distribution />;
-    } else if (handler == "bookmarks") {
-        content = auth(
-            <PostFeed
-                useList={true}
-                title={<HeadBar title="Bookmarks" shareLink="bookmarks" />}
-                emptyMessage="No bookmarks yet."
-                includeComments={true}
-                feedLoader={async () => await loadFeed(window.user.bookmarks)}
-            />,
-        );
-    } else if (handler == "invites") {
-        content = auth(<Invites />);
-    } else if (handler == "feed") {
-        const params = param.split(/\+/).map(safeDecode);
-        content = <Feed params={params} />;
-    } else if (handler == "thread") {
-        content = <Thread id={parseInt(param)} />;
-    } else if (handler == "user") {
-        setTitle(`profile: @${param}`);
-        content = <Profile handle={param} />;
-    } else if (handler == "journal") {
-        setTitle(`${param}'s journal`);
-        headerStyle = "minimal";
-        content = <Journal handle={param} />;
-    } else {
-        content = <Landing />;
-    }
-
-    headerRoot.render(
-        <React.StrictMode>
-            <Header
-                style={headerStyle}
-                inboxMode={inboxMode}
-                route={window.location.hash}
-            />
-        </React.StrictMode>,
-    );
-    renderFrame(<React.StrictMode>{content}</React.StrictMode>);
-};
-
-const reloadCache = async (includeTags = true) => {
-    window.backendCache =
-        window.backendCache ||
-        ({ recent_tags: [] } as typeof window.backendCache);
-    const previous = window.backendCache;
-    const [recent_tags, stats, config, domainsCfgResp] = await Promise.all([
-        includeTags
-            ? window.api.query<[string, any][]>(
-                  "recent_tags",
-                  domain(),
-                  "",
-                  500,
-              )
-            : previous.recent_tags,
-        window.api.query<Stats>("stats"),
-        window.api.query<Config>("config"),
-        window.api.query<any>("domains", domain()),
-    ]);
-    if (!config) console.error("Config wasn't loaded!");
-    if (!stats) console.error("Stats weren't loaded!");
-    window.backendCache = {
-        recent_tags: recent_tags || previous.recent_tags || [],
-        stats: stats || previous.stats || ({} as Stats),
-        config: config || previous.config || ({} as Config),
-        domains:
-            domainsCfgResp ||
-            previous.domains ||
-            ({} as { [domain: string]: DomainConfig }),
-    };
-    const domainCfg =
-        window.backendCache.domains[domain() || getCanonicalDomain()];
-    window.monoRealm = getMonoRealm(domainCfg);
-    window.hideRealmless = !!(window.monoRealm || getJournal(domainCfg));
-    const last_upgrade = window.backendCache.stats?.last_release?.timestamp;
-    if (!last_upgrade) return;
-    else if (window.lastSavedUpgrade == 0) {
-        window.lastSavedUpgrade = last_upgrade;
-    } else if (window.lastSavedUpgrade != last_upgrade) {
-        window.lastSavedUpgrade = last_upgrade;
-        const banner = document.getElementById("upgrade_banner") as HTMLElement;
-        banner.innerHTML = "New app version is available! Click me to reload.";
-        banner.onclick = () => {
-            banner.innerHTML = "Reloading...";
-            setTimeout(() => location.reload(), 100);
-        };
-        banner.style.display = "block";
-    }
-};
-
-export const confirmPrincipalChange = async () => {
-    if (
-        !window.principalId ||
-        !(await window.api.query<boolean>("migration_pending"))
-    )
-        return;
-    const response = await window.api.call<any>("confirm_principal_change");
-    handleError(response);
-};
-
-const Footer = ({}) => (
-    <footer className="small_text text_centered vertically_spaced">
-        <>
-            &#10045; <a href="#/post/0">2021</a>
-            <span className="left_half_spaced right_half_spaced">&middot;</span>
-            <a href={location.origin}>{location.host.toLowerCase()}</a>
-        </>
-    </footer>
-);
-
-const updateDoc = async () => {
-    const scroll_up_button = document.createElement("div");
-    scroll_up_button.id = "scroll_up_button";
-    scroll_up_button.innerHTML = "<span>&#9650;</span>";
-    document.body.appendChild(scroll_up_button);
-    window.scrollUpButton = document.getElementById(
-        "scroll_up_button",
-    ) as HTMLElement;
-    window.scrollUpButton.style.display = "none";
-    window.scrollUpButton.onclick = () =>
-        window.scrollTo({ top: 0, behavior: "smooth" });
-    window.scrollUpButton.className = "clickable action";
-    window.addEventListener("scroll", () => {
-        window.lastActivity = new Date();
-        const h = document.documentElement,
-            b = document.body,
-            st = "scrollTop",
-            sh = "scrollHeight";
-
-        const percent =
-            ((h[st] || b[st]) / ((h[sh] || b[sh]) - h.clientHeight)) * 100;
-        window.scrollUpButton.style.display =
-            window.scrollY > 1500 ? "flex" : "none";
-        if (percent > 60) {
-            const visibleFrame = stack.lastElementChild;
-            const pageFlipper = visibleFrame?.getElementsByClassName(
-                "pageFlipper",
-            )[0] as unknown as HTMLButtonElement;
-            if (pageFlipper) pageFlipper.click();
-        }
-    });
-    window.addEventListener("keyup", () => {
-        window.lastActivity = new Date();
-        window.scrollUpButton.style.display = "none";
-    });
-    window.addEventListener("popstate", () => {
-        let preview = document.getElementById("preview");
-        if (preview) preview.style.display = "none";
-        App();
-    });
-};
-
-export const instantiateApi = async () => {
-    // Reuse the client that signed in; constructing another instance would
-    // leave the previous one's activity and state watchers running.
-    const authClient =
-        window.authClient ||
-        new AuthClient({
-            derivationOrigin: window.location.origin,
-        });
-
-    window.authClient = authClient;
-    let identity;
-    try {
-        if (authClient.isAuthenticated()) {
-            identity = await authClient.getIdentity();
-        } else if (localStorage.getItem("IDENTITY")) {
-            const serializedIdentity = localStorage.getItem("IDENTITY");
-            if (serializedIdentity) {
-                identity = Ed25519KeyIdentity.fromJSON(serializedIdentity);
-            }
-        }
-    } catch (err) {
-        // A failing Internet Identity session or a corrupt stored key must not
-        // abort bootstrap: the app would stay on the loading screen forever.
-        // Carry on anonymously and ask the user to sign in again.
-        console.error("Failed to restore the identity", err);
-        showPopUp(
-            "error",
-            "Failed to restore your session. Please sign in again.",
-            7,
-        );
-    }
-    const api = ApiGenerator(MAINNET_MODE, identity);
-    if (identity) window.principalId = identity.getPrincipal().toString();
-    window.api = api;
-    return identity;
-};
-
-const bootstrap = async () => {
-    const identity = await instantiateApi();
-
-    /*
-     *  RECOVERY SHORTCUT
-     */
-    if (parseHash()[0] === "recovery") {
-        createRoot(document.body as HTMLElement).render(
-            <React.StrictMode>
-                <Recovery />
-            </React.StrictMode>,
-        );
-        window.user = await window.api.query<any>("user", "", []);
-        return;
-    }
-
-    window.mainnet_api = ApiGenerator(true, identity);
-    window.lastSavedUpgrade = 0;
-    window.lastVisit = BigInt(0);
-    window.reloadCache = reloadCache;
-    window.setUI = setUI;
-    window.resetUI = () => {
-        window.uiInitialized = false;
-        const frames = Array.from(stack.children);
-        frames.forEach(dropFrame);
-    };
-
-    const futures = [reloadCache()];
-
-    window.reloadUser = async () => {
-        if (!window.api) return;
-
-        const data = await window.api.query<User>("user", domain(), []);
-        if (data) {
-            let userIds = data.followees.concat(data.followers);
-            populateUserNameCache(userIds);
-            data.realms.reverse();
-            window.user = data;
-            if (600000 < microSecsSince(window.user.last_activity)) {
-                window.lastVisit = window.user.last_activity;
-                window.api.call("update_last_activity");
-            } else if (window.lastVisit == BigInt(0))
-                window.lastVisit = window.user.last_activity;
+    const renderPage = () => {
+        switch (route.name) {
+            case "home":
+                return <HomePage />;
+            case "space":
+                return <HomePage spaceId={route.id} />;
+            case "tag":
+                return <HomePage tag={route.tag} />;
+            case "spaces":
+                return <SpacesPage />;
+            case "post":
+                return <ThreadPage postId={route.id} />;
+            case "user":
+                return <ProfilePage handle={route.handle} />;
+            case "explore":
+                return <ExplorePage initialQuery={route.query} />;
+            case "notifications":
+                return <NotificationsPage />;
+            case "bookmarks":
+                return <BookmarksPage />;
+            case "settings":
+                return <SettingsPage />;
         }
     };
 
-    setInterval(async () => {
-        await window.reloadUser();
-        await reloadCache(false);
-    }, REFRESH_RATE_SECS * 1000);
-
-    futures.push(confirmPrincipalChange().then(window.reloadUser));
-
-    await Promise.all(futures);
-
-    // Check storage runway once on load and prompt a top-up if it is low.
-    maybePromptTopUp();
-
-    updateDoc();
-
-    App();
-
-    footerRoot.render(
-        <React.StrictMode>
-            <Footer />
-        </React.StrictMode>,
+    return (
+        <Layout route={route}>
+            {renderPage()}
+            <AuthOnboardingModal />
+            <CreateSpaceModal />
+        </Layout>
     );
 };
 
-bootstrap();
+const rootEl = document.getElementById("root");
+if (rootEl) {
+    createRoot(rootEl).render(
+        <React.StrictMode>
+            <AppProvider>
+                <AppRoutes />
+            </AppProvider>
+        </React.StrictMode>,
+    );
+}

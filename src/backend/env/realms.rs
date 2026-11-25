@@ -104,55 +104,51 @@ pub fn create_realm(
 ) -> Result<(), String> {
     realm.validate()?;
 
-    let Realm {
-        controllers,
-        cleanup_penalty,
-        ..
-    } = &realm;
-    if controllers.is_empty() {
-        return Err("no controllers specified".into());
-    }
-
+    let realm_id = realm_id.trim().to_uppercase();
     validate_realm_id(&realm_id)?;
 
-    if CONFIG.name.to_lowercase() == realm_id.to_lowercase() || state.realms.contains_key(&realm_id)
+    if realm_id.is_empty()
+        || CONFIG.name.to_lowercase() == realm_id.to_lowercase()
+        || state.realms.contains_key(&realm_id)
     {
-        return Err("realm name taken".into());
+        return Err("Space name already taken".into());
     }
 
-    let user_id = state
-        .principal_to_user(principal)
-        .ok_or("user not found")?
-        .id;
+    let is_admin = state.is_admin(principal);
+    let user = state.principal_to_user(principal).ok_or("user not found")?;
 
-    state.charge(
-        user_id,
-        CONFIG.realm_cost,
-        format!("new realm /{}", realm_id),
-    )?;
+    if user.deactivated {
+        return Err("account suspended".into());
+    }
 
+    if !is_admin && user.controlled_realms.len() >= CONFIG.max_spaces_per_user {
+        return Err(format!(
+            "Space limit reached (maximum {} Spaces per account)",
+            CONFIG.max_spaces_per_user
+        ));
+    }
+
+    let user_id = user.id;
     let user = state
         .principal_to_user_mut(principal)
         .ok_or("user not found")?;
     user.controlled_realms.insert(realm_id.clone());
-    let user_name = user.name.clone();
+    if !user.realms.contains(&realm_id) {
+        user.realms.push(realm_id.clone());
+    }
 
-    realm.cleanup_penalty = CONFIG.max_realm_cleanup_penalty.min(*cleanup_penalty);
+    if realm.controllers.is_empty() {
+        realm.controllers.insert(user_id);
+    }
+    realm.cleanup_penalty = 0;
+    realm.num_members = 1;
     realm.last_update = time();
     realm.created = time();
     if realm.label_color.is_empty() {
-        realm.label_color = "#000000".into();
+        realm.label_color = "#3b82f6".into();
     }
 
-    state.realms.insert(realm_id.clone(), realm);
-
-    let _ = state.system_message(
-        format!(
-            "Realm [{}](/#/realm/{0}) was created by @{}",
-            realm_id, user_name
-        ),
-        CONFIG.dao_realm.into(),
-    );
+    state.realms.insert(realm_id, realm);
 
     Ok(())
 }

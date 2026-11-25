@@ -1,57 +1,114 @@
-# README
+# Relay
 
-## Upgrade proposal verification
+An open, ad-free social network hosted on the [Internet Computer](https://internetcomputer.org), featuring:
 
-Assume you want to verify a new upgrade proposal with code commit `<COMMIT>` and binary hash `<HASH>`.
+-   **Zero crypto friction:** Free signup and posting via **Internet Identity** passkeys.
+-   **Modern 3-column React 19 + Tailwind CSS frontend:** Dark-first design with Light mode toggle, responsive mobile bottom navigation, and centralised branding in [`src/frontend/src/brand.ts`](./src/frontend/src/brand.ts) and [`src/backend/env/config.rs`](./src/backend/env/config.rs).
+-   **Rich social features:** Markdown posts, threaded replies, **Spaces** (topic communities, up to 3 per account), toggleable emoji reactions, polls, reposts, bookmarks, hashtag feeds, search, notifications, and profiles.
+-   **Shared app-managed media storage:** A single shared `bucket` canister funded by you, with automatic client-side WebP compression, server-side MIME/size checks (512 KB/image), and per-user quotas (50 MB/user).
+-   **Single-admin moderation:** The deployer principal is automatically granted admin privileges (delete posts, suspend/restore accounts, delete Spaces, configure the shared media bucket, and register custom domains).
 
-0. Install Docker (only once).
-1. `git clone https://github.com/TaggrNetwork/taggr.git` (only once)
-2. `cd taggr`
-3. `git fetch --all && git checkout <COMMIT>`
-4. `make release`
-5. Verify that the printed hash matches the `<HASH>` value from the release page.
+---
 
-`make release` runs the full validation pipeline (lints, Rust tests, Playwright e2e) inside a container and only produces a hash if everything passes. A failing release therefore cannot be hashed — the printed hash is a signal that the source passed validation and the production wasm was built by the reproducible release builder. Podman is used automatically if installed; otherwise Docker. Override with `CONTAINER=docker make release`.
+## Customising Your Brand
 
-The production wasm is always built in a `linux/amd64` container so its hash matches Linux verifiers. On amd64 hosts this is a single container that runs tests then the production build. On non-amd64 hosts the e2e gate runs in a host-native container (`TEST_PLATFORM`, e.g. `linux/arm64` on Apple Silicon — PocketIC doesn't tolerate qemu emulation), then the production wasm is built by a separate amd64 artifact container. The build is reproducible from a cold Cargo target via `codegen-units = 1`, `lto = true`, `strip = true`, `panic = "abort"` in `Cargo.toml` plus `--remap-path-prefix` in the Dockerfile, so the two-container path produces the same hash as the single-container path. Only `taggr.wasm.gz` is copied out via `RELEASE_ARTIFACT_DIR`; the Cargo target directory stays inside the container so macOS bind-mount semantics don't change the hash.
+Change your app name, tagline, community label, or accent colour in two places:
 
-> **Note:** the migration from dfx to icp-cli changed the released `taggr.wasm.gz` hash basis: `candid:service` metadata now comes from `src/backend/taggr.did` (added by `ic-wasm` in `build.sh`) and compression is done by `gzip -nf9` in `build.sh`. Rebuilds of the same commit remain deterministic; hashes from before the migration are not reproducible with the new pipeline.
+1. Frontend: [`src/frontend/src/brand.ts`](./src/frontend/src/brand.ts) (name, tagline, accent preset, emoji reactions) + icons in [`src/frontend/assets/`](./src/frontend/assets/).
+2. Backend: `CONFIG.name` in [`src/backend/env/config.rs`](./src/backend/env/config.rs).
 
-By default `make release` is quiet — only stage markers (`==> [N/7] ...`), the Playwright run, and the final hash print. To stream every underlying tool's stdout/stderr (cargo, icp, npm, build.sh) for debugging, set `VERBOSE=1`:
+---
 
-    VERBOSE=1 make release
+## Local Development
 
-Same flag works for `make tests`.
+Install prerequisites:
 
-Outputs of a successful run:
+```bash
+npm install -g @icp-sdk/icp-cli @icp-sdk/ic-wasm
+npm install
+```
 
--   `release-artifacts/taggr.wasm.gz` — the production wasm.
--   `test-results/` and `playwright-report/` — Playwright traces and the HTML report (open `playwright-report/index.html` to inspect any failures).
+Build and deploy both canisters locally:
 
-Note: the first run is slow (Chromium install layer is several hundred MB) and icp-cli downloads the network launcher and PocketIC binaries on first use.
+```bash
+make start
+NODE_ENV=production DFX_NETWORK=local npm run build
+icp deploy relay
+icp deploy bucket
+```
 
-## Release proposal
+Link the shared media bucket (run once after creating canisters):
 
-To propose a release, follow the steps above first.
-If they were successful, you'll find a binary `taggr.wasm.gz` in the `release-artifacts` directory.
-Use the printed code commit and the binary to submit a new release proposal.
+```bash
+APP_ID=$(icp canister id relay)
+BUCKET_ID=$(icp canister id bucket)
 
-## Running tests during development
+# Authorise the main app canister to write into the shared bucket
+icp canister call bucket add_controller "(principal \"$APP_ID\")"
 
-For day-to-day iteration, skip the prod build and just run the test suite:
+# Point the main app canister at the shared bucket
+icp canister call relay set_media_bucket "(\"$BUCKET_ID\")"
+```
 
-    make tests
+---
 
-Same image as `make release` and the same checks (lints, Rust tests, Playwright e2e), but stops before the deterministic prod build. Use this while iterating; use `make release` when you actually want a hash.
+## Deploying to Internet Computer Mainnet
 
-## Backups
+1. **Create or select your mainnet identity** (make sure it holds ICP / cycles):
 
-Make sure you have [installed cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html).
+    ```bash
+    icp identity new mainnet
+    icp identity default mainnet
+    icp cycles balance -e ic
+    ```
 
-To create a backup of the Taggr state, run:
+2. **Build the production frontend bundle** (embedded into the Rust canister Wasm):
 
-    make backup DIR=/path/to/backup
+    ```bash
+    NODE_ENV=production DFX_NETWORK=ic npm run build
+    ```
 
-## Local development and contributions
+3. **Deploy the app canister and shared media bucket to IC mainnet:**
 
-Refer to the [local development](./docs/LOCAL_DEVELOPMENT.md) docs for instructions on how to work with Taggr locally.
+    ```bash
+    icp deploy -e ic relay
+    icp deploy -e ic bucket
+    ```
+
+    Keep your personal identity as the controller of both canisters so you can always push upgrades with `icp deploy -e ic relay`.
+
+4. **Link the shared media bucket** so users can upload photos with zero crypto setup:
+
+    ```bash
+    APP_ID=$(icp canister id -e ic relay)
+    BUCKET_ID=$(icp canister id -e ic bucket)
+
+    icp canister call -e ic bucket add_controller "(principal \"$APP_ID\")"
+    icp canister call -e ic relay set_media_bucket "(\"$BUCKET_ID\")"
+    ```
+
+5. **Open your live app:**
+
+    ```
+    https://<APP_ID>.icp0.io
+    ```
+
+    Sign in with Internet Identity, then grant your Internet Identity principal admin access so you can moderate directly from the web UI (**Settings & Admin**):
+
+    ```bash
+    icp canister call -e ic relay add_admin "(\"<YOUR_II_PRINCIPAL>\")"
+    ```
+
+6. **Optional — Attach a Custom Domain Later:**
+    - Add your domain in **Settings & Admin → Register custom domain** (this updates `/.well-known/ic-domains` automatically).
+    - Add the standard IC DNS records (`CNAME` to `<APP_ID>.icp0.io`, `_canister-id` `TXT` record) and register the domain with the IC boundary nodes.
+
+---
+
+## Checks & Builds
+
+```bash
+make format   # cargo fmt + prettier
+make check    # cargo check --tests, cargo fmt --check, tsc --noEmit, prettier --check
+npm run test:unit
+```

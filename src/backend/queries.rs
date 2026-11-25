@@ -1,10 +1,9 @@
-use crate::env::{invoices::principal_to_subaccount, proposals::Payload, realms::RealmId};
+use crate::env::realms::RealmId;
 
 use super::*;
 use candid::Principal;
 use env::{
     config::CONFIG,
-    ethereum::address_from_public_key,
     memory,
     post::{Post, PostId},
     user::UserId,
@@ -12,66 +11,68 @@ use env::{
 };
 use ic_cdk::api::{self, msg_arg_data as arg_data_raw};
 use ic_cdk_macros::query;
-use ic_ledger_types::AccountIdentifier;
+use serde::Serialize;
 use serde_bytes::ByteBuf;
 
-// Returns the delegate principal if one exists or returns the canonical one otherwise.
 fn caller(state: &State) -> Principal {
     let canonical_principal = api::msg_caller();
     delegations::resolve_delegation(state, canonical_principal).unwrap_or(canonical_principal)
 }
 
-#[export_name = "canister_query check_invite"]
-fn check_invite() {
-    let code: String = parse(&arg_data_raw());
-    reply(read(|state| state.invite_codes.contains_key(&code)))
+fn effective_domain(state: &State, domain: String) -> String {
+    if state.domains.contains_key(&domain) {
+        domain
+    } else {
+        "localhost".to_string()
+    }
 }
 
-#[export_name = "canister_query migration_pending"]
-fn migration_pending() {
+#[derive(Serialize)]
+struct AppInfo {
+    name: &'static str,
+    canister_id: String,
+    media_bucket: Option<String>,
+    is_admin: bool,
+    storage_used_bytes: u64,
+    storage_quota_bytes: u64,
+    max_blob_size_bytes: usize,
+    max_spaces_per_user: usize,
+    max_posts_per_day: usize,
+    max_comments_per_hour: usize,
+    users_count: usize,
+    posts_count: usize,
+    spaces_count: usize,
+    domains: Vec<String>,
+}
+
+#[export_name = "canister_query app_info"]
+fn app_info() {
     read(|state| {
-        reply(state.principal_change_requests.contains_key(&caller(state)));
+        let p = caller(state);
+        let storage_used_bytes = state
+            .principal_to_user(p)
+            .and_then(|u| state.user_storage_bytes.get(&u.id).copied())
+            .unwrap_or(0);
+        let users_count = state.users.values().filter(|u| u.organic()).count();
+        reply(AppInfo {
+            name: CONFIG.name,
+            canister_id: id().to_text(),
+            media_bucket: state.media_bucket.map(|b| b.to_text()),
+            is_admin: state.is_admin(p),
+            storage_used_bytes,
+            storage_quota_bytes: CONFIG.max_user_storage_bytes,
+            max_blob_size_bytes: CONFIG.max_blob_size_bytes,
+            max_spaces_per_user: CONFIG.max_spaces_per_user,
+            max_posts_per_day: CONFIG.max_posts_per_day,
+            max_comments_per_hour: CONFIG.max_comments_per_hour,
+            users_count,
+            posts_count: state.posts.len(),
+            spaces_count: state.realms.len(),
+            domains: state.domains.keys().cloned().collect(),
+        });
     });
 }
 
-/// The new principal the caller has requested, if a principal change is pending
-/// for them, or `null` otherwise. Keyed by the canonical principal, matching how
-/// `request_principal_change` stores the request.
-#[export_name = "canister_query principal_change_target"]
-fn principal_change_target() {
-    let caller = api::msg_caller();
-    read(|state| {
-        reply(
-            state
-                .principal_change_requests
-                .iter()
-                .find_map(|(new_principal, old_principal)| {
-                    (*old_principal == caller).then(|| new_principal.to_text())
-                }),
-        )
-    });
-}
-
-#[export_name = "canister_query auction"]
-fn auction() {
-    read(|state| {
-        reply((
-            &state.auction,
-            // user's canister subaccount for the ICP deposit
-            AccountIdentifier::new(&id(), &principal_to_subaccount(&caller(state))).to_string(),
-        ))
-    })
-}
-
-#[export_name = "canister_query distribution"]
-fn distribution() {
-    read(|state| {
-        reply(&state.distribution_reports);
-    });
-}
-
-/// Loads the user names for given ids or a speculative list of user name that could be relevant
-/// for the caller: followers, followees, users from engagements and so on.
 #[export_name = "canister_query users_data"]
 fn users_data() {
     read(|state| {
@@ -91,98 +92,6 @@ fn users_data() {
                 .collect::<HashMap<_, _>>(),
         );
     });
-}
-
-#[export_name = "canister_query token_stats"]
-fn token_stats() {
-    read(|state| reply(state.token_stats(time())));
-}
-
-#[export_name = "canister_query transaction"]
-fn transaction() {
-    let id: u32 = parse(&arg_data_raw());
-    read(|state| reply(state.memory.ledger.get(&id).ok_or("not found")));
-}
-
-#[export_name = "canister_query transactions"]
-fn transactions() {
-    let (page, principal, subaccount): (usize, String, String) = parse(&arg_data_raw());
-    read(|state| {
-        let iter = state.memory.ledger.iter();
-        let owner = Principal::from_text(principal).expect("invalid principal");
-        let subaccount = hex::decode(subaccount).expect("invalid subaccount");
-        let iter: Box<dyn DoubleEndedIterator<Item = _>> = if Principal::anonymous() == owner {
-            Box::new(iter)
-        } else {
-            Box::new(iter.filter(|(_, t)| {
-                t.to.owner == owner
-                    && (t.to.subaccount.is_none() || t.to.subaccount.as_ref() == Some(&subaccount))
-                    || t.from.owner == owner
-                        && (t.from.subaccount.is_none()
-                            || t.from.subaccount.as_ref() == Some(&subaccount))
-            }))
-        };
-        reply(
-            iter.rev()
-                .skip(page * CONFIG.feed_page_size)
-                .take(CONFIG.feed_page_size)
-                .collect::<Vec<(&u32, _)>>(),
-        );
-    });
-}
-
-#[export_name = "canister_query proposal"]
-fn proposal() {
-    read(|state| {
-        let id: u32 = parse(&arg_data_raw());
-        reply(
-            state
-                .proposals
-                .iter()
-                .find(|proposal| proposal.id == id)
-                .ok_or("no proposal found"),
-        )
-    })
-}
-
-/// Returns a paginated list of proposals.
-///
-/// # Parameters
-/// - `page`: The page number for pagination (0-indexed)
-/// - `filter`: Filter by proposal type. Valid values:
-///   - `"ALL"`: Return all proposals
-///   - `"RELEASE"`: Return only release proposals
-///   - `"ICP TRANSFER"`: Return only ICP transfer proposals
-///   - `"REALM CONTROLLER"`: Return only realm controller proposals
-///   - `"FUNDING"`: Return only funding proposals
-///   - `"REWARDS"`: Return only rewards proposals
-#[export_name = "canister_query proposals"]
-fn proposals() {
-    let (page, filter): (usize, String) = parse(&arg_data_raw());
-    read(|state| {
-        reply(
-            state
-                .proposals
-                .iter()
-                .rev()
-                .filter(|proposal| {
-                    let payload_type = match &proposal.payload {
-                        Payload::Release(_) => "RELEASE",
-                        Payload::ICPTransfer(_, _) => "ICP TRANSFER",
-                        Payload::AddRealmController(_, _) => "REALM CONTROLLER",
-                        Payload::Funding(_, _) => "FUNDING",
-                        Payload::Rewards(_) => "REWARDS",
-                        Payload::Noop => return false,
-                    };
-                    filter == "ALL" || payload_type == filter
-                })
-                .skip(page * CONFIG.feed_page_size)
-                .take(CONFIG.feed_page_size)
-                .filter_map(|proposal| Post::get(state, &proposal.post_id))
-                .map(|post| post.with_meta(state))
-                .collect::<Vec<_>>(),
-        )
-    })
 }
 
 #[export_name = "canister_query realms"]
@@ -211,9 +120,10 @@ fn domains() {
 
 #[export_name = "canister_query all_realms"]
 fn all_realms() {
-    let page_size = 20;
+    let page_size = 50;
     let (domain, order, page): (String, String, usize) = parse(&arg_data_raw());
     mutate(|state| {
+        let domain = effective_domain(state, domain);
         reply(
             state
                 .sorted_realms(domain, order)
@@ -228,26 +138,11 @@ fn all_realms() {
 fn user_posts() {
     let (domain, handle, page, offset): (String, String, usize, PostId) = parse(&arg_data_raw());
     read(|state| {
+        let domain = effective_domain(state, domain);
         resolve_handle(state, Some(&handle)).map(|user| {
             reply(
                 user.posts(Some(&domain), state, offset, true)
-                    .skip(CONFIG.feed_page_size * page)
-                    .take(CONFIG.feed_page_size)
-                    .map(|post| post.with_meta(state))
-                    .collect::<Vec<_>>(),
-            )
-        })
-    });
-}
-
-#[export_name = "canister_query rewarded_posts"]
-fn rewarded_posts() {
-    let (domain, handle, page, offset): (String, String, usize, PostId) = parse(&arg_data_raw());
-    read(|state| {
-        resolve_handle(state, Some(&handle)).map(|user| {
-            reply(
-                user.posts(Some(&domain), state, offset, true)
-                    .filter(|post| !post.reactions.is_empty())
+                    .filter(|post| !post.is_deleted())
                     .skip(CONFIG.feed_page_size * page)
                     .take(CONFIG.feed_page_size)
                     .map(|post| post.with_meta(state))
@@ -262,6 +157,7 @@ fn user_tags() {
     let (domain, handle, page, offset): (String, String, usize, PostId) = parse(&arg_data_raw());
     let tag = format!("@{}", handle);
     read(|state| {
+        let domain = effective_domain(state, domain);
         reply(
             state
                 .last_posts(domain, None, offset, 0, false)
@@ -279,6 +175,7 @@ fn user() {
     let (domain, input): (String, Vec<String>) = parse(&arg_data_raw());
     let own_profile_fetch = input.is_empty();
     mutate(|state| {
+        let domain = effective_domain(state, domain);
         let handle = input.into_iter().next();
         let user_id = match resolve_handle(state, handle.as_ref()) {
             Some(value) => value.id,
@@ -301,17 +198,6 @@ fn user() {
     });
 }
 
-#[export_name = "canister_query tags_cost"]
-fn tags_cost() {
-    let tags: Vec<String> = parse(&arg_data_raw());
-    read(|state| reply(state.tags_cost(Box::new(tags.iter()))))
-}
-
-#[export_name = "canister_query invites"]
-fn invites() {
-    read(|state| reply(invite::invites_by_principal(state, caller(state)).collect::<Vec<_>>()));
-}
-
 fn personal_filter(
     state: &State,
     realm: Option<&RealmId>,
@@ -329,28 +215,9 @@ fn posts() {
         reply(
             ids.into_iter()
                 .filter_map(|id| Post::get(state, &id))
+                .filter(|post| !post.is_deleted() && !state.is_user_banned(post.user))
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
-        );
-    })
-}
-
-#[export_name = "canister_query journal"]
-fn journal() {
-    let (domain, handle, page, offset): (String, String, usize, PostId) = parse(&arg_data_raw());
-    read(|state| {
-        reply(
-            state
-                .user(&handle)
-                .map(|user| {
-                    user.posts(Some(&domain), state, offset, false)
-                        .filter(|post| !post.is_deleted() && !post.body.starts_with('@'))
-                        .skip(page * CONFIG.feed_page_size)
-                        .take(CONFIG.feed_page_size)
-                        .map(|post| post.with_meta(state))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default(),
         );
     })
 }
@@ -361,12 +228,13 @@ fn hot_posts() {
         parse(&arg_data_raw());
     let realm = optional(realm);
     read(|state| {
+        let domain = effective_domain(state, domain);
         let user = state.principal_to_user(caller(state));
         reply(
             state
                 .hot_posts(domain, realm.as_ref(), offset)
                 .filter(|post| !filtered || personal_filter(state, realm.as_ref(), user, post))
-                .skip(page * CONFIG.feed_page_size)
+                .skip(CONFIG.feed_page_size * page)
                 .take(CONFIG.feed_page_size)
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
@@ -380,18 +248,13 @@ fn last_posts() {
         parse(&arg_data_raw());
     let realm = optional(realm);
     read(|state| {
+        let domain = effective_domain(state, domain);
         let user = state.principal_to_user(caller(state));
         reply(
             state
-                .last_posts(
-                    domain,
-                    realm.as_ref(),
-                    offset,
-                    0,
-                    /* with_comments = */ false,
-                )
+                .last_posts(domain, realm.as_ref(), offset, 0, false)
                 .filter(|post| !filtered || personal_filter(state, realm.as_ref(), user, post))
-                .skip(page * CONFIG.feed_page_size)
+                .skip(CONFIG.feed_page_size * page)
                 .take(CONFIG.feed_page_size)
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
@@ -409,10 +272,12 @@ fn posts_by_tags() {
         PostId,
     ) = parse(&arg_data_raw());
     read(|state| {
+        let domain = effective_domain(state, domain);
         reply(
             state
                 .posts_by_tags_and_users(&domain, optional(realm), offset, &tags_and_users, false)
-                .skip(page * CONFIG.feed_page_size)
+                .filter(|post| !post.is_deleted() && !state.is_user_banned(post.user))
+                .skip(CONFIG.feed_page_size * page)
                 .take(CONFIG.feed_page_size)
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
@@ -424,11 +289,13 @@ fn posts_by_tags() {
 fn personal_feed() {
     let (domain, page, offset): (String, usize, PostId) = parse(&arg_data_raw());
     read(|state| {
+        let domain = effective_domain(state, domain);
         reply(match state.principal_to_user(caller(state)) {
             None => Default::default(),
             Some(user) => user
                 .personal_feed(domain, state, offset)
-                .skip(page * CONFIG.feed_page_size)
+                .filter(|post| !post.is_deleted() && !state.is_user_banned(post.user))
+                .skip(CONFIG.feed_page_size * page)
                 .take(CONFIG.feed_page_size)
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
@@ -444,6 +311,7 @@ fn thread() {
             state
                 .thread(id)
                 .filter_map(|id| Post::get(state, &id))
+                .filter(|post| !state.is_user_banned(post.user))
                 .map(|post| post.with_meta(state))
                 .collect::<Vec<_>>(),
         )
@@ -454,13 +322,10 @@ fn thread() {
 fn recent_tags() {
     let (domain, realm, n): (String, String, usize) = parse(&arg_data_raw());
     let realm = optional(realm);
-    read(|state| reply(state.recent_tags(domain, realm.as_ref(), n)));
-}
-
-#[export_name = "canister_query validate_proposal"]
-fn validate_proposal() {
-    let payload: Payload = parse(&arg_data_raw());
-    read(|state| reply(payload.validate(state)));
+    read(|state| {
+        let domain = effective_domain(state, domain);
+        reply(state.recent_tags(domain, realm.as_ref(), n))
+    });
 }
 
 #[export_name = "canister_query validate_username"]
@@ -474,102 +339,31 @@ fn config() {
     reply(CONFIG);
 }
 
-#[export_name = "canister_query logs"]
-fn logs() {
-    read(|state| reply(state.logs().collect::<Vec<_>>()));
-}
-
-#[export_name = "canister_query recovery_state"]
-fn recovery_state() {
-    read(|state| reply(state.recovery_state()));
-}
-
 #[export_name = "canister_query stats"]
 fn stats() {
     read(|state| reply(state.stats(api::time())));
 }
 
-#[export_name = "canister_query eth_address"]
-fn eth_address() {
-    read(|state| reply(address_from_public_key(&state.eth_public_key).unwrap_or_default()))
-}
-
-#[export_name = "canister_query eth_config"]
-fn eth_config() {
-    reply(env::ethereum::eth_config());
-}
-
-#[export_name = "canister_query eth_recipes"]
-fn eth_recipes() {
-    read(|state| {
-        let principal = caller(state);
-        let recipes = state
-            .principal_to_user_or_cold_wallet(principal)
-            .map(|user| {
-                state
-                    .eth_bridge
-                    .recipes
-                    .values()
-                    .filter(|recipe| recipe.user_id == user.id)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        reply(recipes);
-    });
-}
-
-#[export_name = "canister_query bridge_recipe"]
-fn bridge_recipe() {
-    let index: u64 = parse(&arg_data_raw());
-    read(|state| reply(state.eth_bridge.recipes.get(&index).cloned()));
-}
-
 #[export_name = "canister_query search"]
 fn search() {
     let (domain, query): (String, String) = parse(&arg_data_raw());
-    read(|state| reply(env::search::search(domain, state, query)));
-}
-
-#[export_name = "canister_query proposal_escrow_balance_required"]
-fn proposal_escrow_balance_required() {
-    reply(read(|state| {
-        state.proposal_escrow_balance_required(caller(state))
-    }))
+    read(|state| {
+        let domain = effective_domain(state, domain);
+        reply(env::search::search(domain, state, query))
+    });
 }
 
 #[export_name = "canister_query realm_search"]
 fn realm_search() {
     let (domain, order, query): (String, String, String) = parse(&arg_data_raw());
-    // It's ok to mutate the data to avoid cloning, because we're in a query method.
     mutate(|state| {
+        let domain = effective_domain(state, domain);
         let ids = state
             .sorted_realms(domain, order)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         reply(env::search::realm_search(state, ids, query))
     })
-}
-
-/// Prose (markdown) guide to calling this canister: units, authentication,
-/// costs, lifecycle and gotchas. Discoverable through `candid:service`.
-#[query]
-fn get_api_doc() -> String {
-    include_str!("../frontend/assets/SKILL.md").to_string()
-}
-
-#[query]
-fn bucket_wasm() -> Blob {
-    ByteBuf::from(env::bucket::BUCKET_WASM_GZ.to_vec())
-}
-
-/// Hex sha256 of the current bucket wasm (the gzipped module submitted to
-/// `install_code`), matching `canister_status.module_hash` of an up-to-date
-/// bucket. The frontend compares the two to detect stale buckets.
-#[export_name = "canister_query bucket_wasm_hash"]
-fn bucket_wasm_hash() {
-    use sha2::{Digest, Sha256};
-    reply(hex::encode(Sha256::digest(env::bucket::BUCKET_WASM_GZ)))
 }
 
 #[query]

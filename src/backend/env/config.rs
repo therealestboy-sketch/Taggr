@@ -145,6 +145,9 @@ pub struct Config {
 
     pub ecdsa_key_name: &'static str,
 
+    pub max_spaces_per_user: usize,
+    pub max_user_storage_bytes: u64,
+
     // Address of the deployed TaggrToken contract on Ethereum L1. Empty while
     // the token has not been deployed; bridging is disabled in that case.
     pub eth_token_address: &'static str,
@@ -165,21 +168,18 @@ mod string {
 }
 
 pub const CONFIG: &Config = &Config {
-    name: "Taggr",
+    name: "Relay",
     logo: include_str!("../../frontend/assets/logo.min.svg"),
-    staging: "e4i5g-biaaa-aaaao-ai7ja-cai.icp0.io",
-    staging2: "2ogwt-7aaaa-aaaam-aedoa-cai.icp0.io",
+    staging: "",
+    staging2: "",
 
-    weekly_auction_size_tokens_min: 1500,
-    weekly_auction_size_tokens_max: 100000,
+    weekly_auction_size_tokens_min: 0,
+    weekly_auction_size_tokens_max: 0,
 
-    #[cfg(not(feature = "staging"))]
-    token_symbol: "TAGGR",
-    #[cfg(feature = "staging")]
-    token_symbol: "STAGG",
+    token_symbol: "",
     token_decimals: 2,
-    transaction_fee: 10,
-    credit_transaction_fee: 1,
+    transaction_fee: 0,
+    credit_transaction_fee: 0,
 
     credits_per_xdr: 1000,
 
@@ -189,194 +189,133 @@ pub const CONFIG: &Config = &Config {
 
     boostrapping_threshold_tokens: 100000,
 
-    #[cfg(test)]
-    max_spendable_tokens: 12000000,
-    #[cfg(not(test))]
-    max_spendable_tokens: 120000,
+    max_spendable_tokens: 0,
 
-    #[cfg(any(test, feature = "dev", feature = "staging"))]
     min_treasury_balance_xdrs: 0,
-    #[cfg(not(any(test, feature = "dev", feature = "staging")))]
-    min_treasury_balance_xdrs: 190, // ~$250
 
     minting_threshold_percentage: 1,
 
     active_user_share_for_minting_promille: 10,
 
-    max_age_hot_post_days: 2,
+    max_age_hot_post_days: 7,
 
-    max_credits_mint_kilos: 10,
+    max_credits_mint_kilos: 0,
 
-    #[cfg(not(any(feature = "dev", feature = "staging")))]
-    supply_threshold_for_transfer_percentage: 20,
-    #[cfg(feature = "staging")]
     supply_threshold_for_transfer_percentage: 0,
-    #[cfg(feature = "dev")]
-    supply_threshold_for_transfer_percentage: 10,
 
     user_report_validity_days: 90,
 
-    random_reward_amount: 1000,
+    random_reward_amount: 0,
 
-    dao_realm: "DAO",
+    dao_realm: "",
 
-    stalwarts_realm: "STALWARTS",
+    stalwarts_realm: "",
 
-    realm_revenue_percentage: 5,
+    realm_revenue_percentage: 0,
 
     realm_inactivity_timeout_days: 365,
 
-    #[cfg(feature = "dev")]
-    proposal_approval_threshold: 1,
-    #[cfg(not(feature = "dev"))]
-    proposal_approval_threshold: 66,
+    proposal_approval_threshold: 100,
 
     proposal_controversy_threshold: 10,
 
-    maximum_supply: 100_000_000,
+    maximum_supply: 0,
 
     canister_survival_period_days: 90,
 
     num_hot_posts: 10000,
 
-    #[cfg(all(feature = "dev", not(test)))]
-    report_confirmation_percentage: 1,
-    #[cfg(test)]
-    report_confirmation_percentage: 15,
-    #[cfg(not(any(test, feature = "dev")))]
-    report_confirmation_percentage: 20,
+    report_confirmation_percentage: 100,
 
     minimal_tip: 1,
 
-    max_realm_cleanup_penalty: 500,
+    max_realm_cleanup_penalty: 0,
 
-    max_bucket_size: 1024 * 1024 * 1024 * 96, // 96Gb
+    max_bucket_size: 1024 * 1024 * 1024 * 96, // 96GB
 
     #[cfg(not(test))]
-    max_posts_per_day: 15,
+    max_posts_per_day: 25,
     #[cfg(not(test))]
-    max_comments_per_hour: 30,
+    max_comments_per_hour: 60,
 
     #[cfg(test)]
     max_posts_per_day: 100,
     #[cfg(test)]
     max_comments_per_hour: 100,
 
-    excess_penalty: 5,
+    excess_penalty: 0,
 
     feed_page_size: 30,
 
-    reporting_penalty_misbehaviour: 1000,
+    reporting_penalty_misbehaviour: 0,
 
-    #[cfg(feature = "staging")]
-    min_credits_for_inviting: 5,
-    #[cfg(not(feature = "staging"))]
-    min_credits_for_inviting: 50,
+    min_credits_for_inviting: 0,
 
-    default_max_downvotes: 15,
+    default_max_downvotes: 1000,
 
-    domain_cost: 1000,
-    account_activation_cost: 1000,
-    post_cost: 2,
-    poll_cost: 3,
-    realm_cost: 1000,
-    tipping_cost: 5,
+    domain_cost: 0,
+    account_activation_cost: 0,
+    post_cost: 0,
+    poll_cost: 0,
+    realm_cost: 0,
+    tipping_cost: 0,
 
     poll_revote_deadline_hours: 4,
 
-    identity_change_cost: 1000,
+    identity_change_cost: 0,
 
     max_realm_name: 25,
     max_realm_logo_len: 16 * 1024,
 
-    post_deletion_penalty_factor: 10,
+    post_deletion_penalty_factor: 0,
 
-    response_reward: 1,
+    response_reward: 0,
 
-    inactivity_penalty: 45,
-    inactivity_duration_weeks: 26,
+    inactivity_penalty: 0,
+    inactivity_duration_weeks: 52,
     voting_power_activity_weeks: 4,
 
-    stalwart_percentage: 3,
-    #[cfg(feature = "staging")]
-    min_stalwart_activity_weeks: 1,
-    #[cfg(not(feature = "staging"))]
+    stalwart_percentage: 0,
     min_stalwart_activity_weeks: 6,
-
-    #[cfg(feature = "staging")]
-    min_stalwart_account_age_weeks: 1,
-    #[cfg(not(feature = "staging"))]
     min_stalwart_account_age_weeks: 26,
-
-    #[cfg(feature = "dev")]
-    min_emergency_release_tokens: 5,
-    #[cfg(not(feature = "dev"))]
-    min_emergency_release_tokens: 2000,
-
-    stalwart_moderation_reward: 20,
+    min_emergency_release_tokens: 0,
+    stalwart_moderation_reward: 0,
 
     max_post_length: 100000,
     max_tag_length: 30,
     max_user_info_length: 5096,
-    max_blob_size_bytes: 460800,
+    max_blob_size_bytes: 512 * 1024, // 512KB per image
 
     online_activity_minutes: 10 * 60000000000_u64,
 
     reactions: &[
-        // sad, thumb up, heart
-        (11, 1),
+        // thumb up, heart
         (10, 1),
         (12, 1),
-        // rocket, 100, joy, flame,
-        (53, 5),
-        (52, 5),
-        (51, 5),
-        (50, 5),
-        // star, pirate
-        (100, 10),
-        (101, 10),
-        // thumb down
-        (DOWNVOTE_REACTION_ID, -3),
-    ],
-
-    min_positive_reaction_id: 10,
-
-    reaction_fee: &[
-        (100, 1),
-        (101, 1),
+        // flame, joy, 100, rocket
         (50, 1),
         (51, 1),
         (52, 1),
         (53, 1),
-        (10, 1),
-        (11, 1),
-        (12, 1),
     ],
 
-    max_funding_amount: 500000,
+    min_positive_reaction_id: 10,
 
-    neuron_id: 16737374299031693047,
+    reaction_fee: &[(10, 0), (12, 0), (50, 0), (51, 0), (52, 0), (53, 0)],
 
-    #[cfg(feature = "dev")]
-    proposal_escrow_amount_xdr: 1,
-    #[cfg(not(feature = "dev"))]
-    proposal_escrow_amount_xdr: 144,
+    max_funding_amount: 0,
 
-    #[cfg(any(test, feature = "dev"))]
-    ecdsa_key_name: "dfx_test_key",
-    #[cfg(not(any(test, feature = "dev")))]
-    ecdsa_key_name: "key_1",
+    neuron_id: 0,
 
-    // Local development uses Anvil: the token deployed by its first account
-    // lands on this deterministic address and the chain id is 31337.
-    #[cfg(feature = "dev")]
-    eth_token_address: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    #[cfg(not(feature = "dev"))]
-    eth_token_address: "0xDEc2121f501d7CB6f318cC7eA7c4f5fda67Db7D2",
-    #[cfg(feature = "dev")]
-    eth_chain_id: 31337,
-    #[cfg(not(feature = "dev"))]
-    eth_chain_id: 1,
+    proposal_escrow_amount_xdr: 0,
+
+    ecdsa_key_name: "",
+
+    max_spaces_per_user: 3,
+    max_user_storage_bytes: 50 * 1024 * 1024, // 50MB per user
+
+    eth_token_address: "",
+    eth_chain_id: 0,
 };
 
 pub fn reaction_rewards() -> BTreeMap<u16, i64> {

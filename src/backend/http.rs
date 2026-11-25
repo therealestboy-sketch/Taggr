@@ -1,8 +1,8 @@
 use super::assets;
 use crate::assets::{index_html_headers, INDEX_HTML};
+use crate::metadata::set_metadata;
 use crate::post::Post;
 use crate::read;
-use crate::{config::CONFIG, metadata::set_metadata};
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
@@ -48,65 +48,22 @@ fn http_request_update(req: HttpRequest) -> HttpResponse {
         })
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
-struct Metadata<'a> {
-    decimals: u8,
-    symbol: &'a str,
-    token_name: &'a str,
-    fee: u64,
-    logo: &'a str,
-}
-
 #[ic_cdk_macros::query]
 fn http_request(req: HttpRequest) -> HttpResponse {
-    let path = &req.url;
-
-    use serde_json;
-
-    let mut parts = req.path().split('/').filter(|part| !part.is_empty());
-
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some("api"), Some("v1"), Some("metadata")) => {
-            use base64::{engine::general_purpose, Engine as _};
-            HttpResponse {
-                status_code: 200,
-                headers: vec![(
-                    "Content-Type".to_string(),
-                    "application/json; charset=UTF-8".to_string(),
-                )],
-                body: ByteBuf::from(
-                    serde_json::to_vec(&Metadata {
-                        decimals: CONFIG.token_decimals,
-                        symbol: CONFIG.token_symbol,
-                        token_name: CONFIG.name,
-                        fee: CONFIG.transaction_fee,
-                        logo: &format!(
-                            "data:image/png;base64,{}",
-                            general_purpose::STANDARD
-                                .encode(include_bytes!("../frontend/assets/apple-touch-icon.png"))
-                        ),
-                    })
-                    .unwrap_or_default(),
-                ),
-                upgrade: None,
-            }
+    let path = req.path();
+    // If the asset is certified, return it; otherwise upgrade to http_request_update for OG routing
+    if let Some((headers, body)) = assets::asset_certified(path) {
+        HttpResponse {
+            status_code: 200,
+            headers,
+            body,
+            upgrade: None,
         }
-        _ => {
-            // If the asset is certified, return it, otherwise, upgrade to http_request_update
-            if let Some((headers, body)) = assets::asset_certified(path) {
-                HttpResponse {
-                    status_code: 200,
-                    headers,
-                    body,
-                    upgrade: None,
-                }
-            } else {
-                HttpResponse {
-                    status_code: 200,
-                    upgrade: Some(true),
-                    ..Default::default()
-                }
-            }
+    } else {
+        HttpResponse {
+            status_code: 200,
+            upgrade: Some(true),
+            ..Default::default()
         }
     }
 }
@@ -125,14 +82,7 @@ fn route(url: &str) -> Option<(Headers, ByteBuf)> {
                 if let Some(post) = Post::get(state, &id.parse::<u64>().ok()?) {
                     return index(
                         domain,
-                        &format!(
-                            "{}/{}",
-                            match post.parent {
-                                None => "post",
-                                _ => "thread",
-                            },
-                            post.id
-                        ),
+                        &format!("post/{}", post.id),
                         &format!(
                             "{} #{} by @{}",
                             match post.parent {
@@ -148,42 +98,32 @@ fn route(url: &str) -> Option<(Headers, ByteBuf)> {
                 }
                 None
             }
-            (Some("journal"), Some(handle)) => {
-                let user = state.user(handle)?;
-                index(
-                    domain,
-                    &format!("journal/{}", user.name),
-                    &format!("@{}'s journal", user.name),
-                    &filter(&user.about),
-                    "website",
-                )
-            }
             (Some("user"), Some(handle)) => {
                 let user = state.user(handle)?;
                 index(
                     domain,
                     &format!("user/{}", user.name),
-                    &format!("User @{}", user.name),
+                    &format!("@{}", user.name),
                     &filter(&user.about),
                     "profile",
                 )
             }
-            (Some("realm"), Some(arg)) => {
+            (Some("space"), Some(arg)) | (Some("realm"), Some(arg)) => {
                 let id = arg.to_uppercase();
-                let realm = state.realms.get(&id)?;
+                let space = state.realms.get(&id)?;
                 index(
                     domain,
-                    &format!("realm/{}", id),
-                    &format!("Realm {}", id),
-                    &filter(&realm.description),
+                    &format!("space/{}", id),
+                    &format!("Space {}", id),
+                    &filter(&space.description),
                     "website",
                 )
             }
-            (Some("feed"), Some(filter)) => index(
+            (Some("tag"), Some(tag)) | (Some("feed"), Some(tag)) => index(
                 domain,
-                &format!("feed/{}", filter),
-                filter,
-                &format!("Latest posts on {}", filter),
+                &format!("tag/{}", tag),
+                &format!("#{}", tag),
+                &format!("Latest posts tagged #{}", tag),
                 "website",
             ),
             _ => assets::asset("/"),
@@ -202,30 +142,4 @@ fn index(
         index_html_headers(),
         ByteBuf::from(set_metadata(INDEX_HTML, host, path, title, desc, page_type)),
     ))
-}
-
-#[cfg(test)]
-mod test {
-
-    use super::*;
-
-    #[test]
-    fn should_return_metadata() {
-        let http_resp = http_request(HttpRequest {
-            url: "/api/v1/metadata".to_string(),
-            headers: vec![],
-        });
-        match serde_json::from_slice::<Metadata>(&http_resp.body) {
-            Ok(metadata) => {
-                assert_eq!(metadata, Metadata {
-                decimals: 2,
-                symbol: "TAGGR",
-                token_name: "Taggr",
-                fee: 10,
-                logo: "data:image/png;base64,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",
-            });
-            }
-            Err(_) => panic!("failed to deserialize json"),
-        }
-    }
 }

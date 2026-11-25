@@ -1,12 +1,15 @@
 {
-    "name": "taggr",
+    "name": "relay",
     "version": "0.1.0",
-    "description": "Decentralized Social Network",
+    "description": "An open, ad-free social network on the Internet Computer",
     "imports": {
         "#markdown": "./src/frontend/src/markdown.ts"
     },
     "keywords": [
         "TypeScript",
+        "React",
+        "TailwindCSS",
+        "Internet Computer",
         "Canister"
     ],
     "scripts": {
@@ -21,19 +24,26 @@
     },
     "devDependencies": {
         "@playwright/test": "1.56.1",
+        "@tailwindcss/postcss": "^4.1.0",
         "@types/isomorphic-fetch": "0.0.39",
+        "@types/react": "^19.0.0",
         "@types/react-dom": "19.0.0",
         "buffer": "6.0.3",
         "copy-webpack-plugin": "^14.0.0",
+        "css-loader": "^7.1.2",
+        "esbuild-loader": "4.5.0",
         "html-webpack-plugin": "5.5.3",
         "isomorphic-fetch": "3.0.0",
+        "postcss": "^8.5.0",
+        "postcss-loader": "^8.1.1",
         "prettier": "^3.3.3",
         "process": "0.11.10",
         "raw-loader": "4.0.2",
         "react": "19.3.1",
         "react-dom": "19.3.1",
+        "style-loader": "^4.0.0",
+        "tailwindcss": "^4.1.0",
         "terser-webpack-plugin": "^5.3.10",
-        "esbuild-loader": "4.5.0",
         "typescript": "7.0.2",
         "webpack": "^5.111.1",
         "webpack-cli": "7.2.3",
@@ -50,6 +60,6 @@
         "@icp-sdk/auth": "10.0.2",
         "@icp-sdk/canisters": "4.0.0",
         "@icp-sdk/core": "6.1.1",
-        "diff-match-patch": "1.0.5"
+        "lucide-react": "^0.511.0"
     }
 }

@@ -16,7 +16,7 @@ use candid::Principal;
 use config::CONFIG;
 use domains::{available_realms, domain_realm_post_filter, DomainConfig, DomainSubConfig};
 use ic_cdk::api::stable_size;
-use ic_cdk::api::{self, canister_cycle_balance, performance_counter};
+use ic_cdk::api::{self, canister_cycle_balance};
 use ic_cdk_management_canister::raw_rand;
 use ic_ledger_types::{AccountIdentifier, DEFAULT_SUBACCOUNT, MAINNET_LEDGER_CANISTER_ID};
 use invoices::Invoices;
@@ -31,7 +31,6 @@ use token::base;
 use user::{User, UserId};
 
 pub mod auction;
-pub mod bucket;
 pub mod canisters;
 pub mod config;
 pub mod delegations;
@@ -250,6 +249,15 @@ pub struct State {
 
     #[serde(default)]
     pub eth_bridge: ethereum::EthBridge,
+
+    #[serde(default)]
+    pub admins: BTreeSet<Principal>,
+
+    #[serde(default)]
+    pub media_bucket: Option<Principal>,
+
+    #[serde(default)]
+    pub user_storage_bytes: HashMap<UserId, u64>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -614,28 +622,12 @@ impl State {
     }
 
     pub fn init(&mut self) {
-        self.domains
-            .insert("localhost".into(), DomainConfig::default());
+        self.domains.entry("localhost".into()).or_default();
+        self.domains.entry(format!("{}.icp0.io", id())).or_default();
+        self.domains.entry(format!("{}.icp.net", id())).or_default();
+        self.domains.entry(format!("{}.ic0.app", id())).or_default();
         assets::load(&self.domains);
-        match token::balances_from_ledger(&mut self.memory.ledger.iter().map(|(_, tx)| tx)) {
-            Ok((balances, total_fees)) => {
-                for user in self.users.values_mut() {
-                    user.balance = balances
-                        .get(&account(user.principal))
-                        .copied()
-                        .unwrap_or_default();
-                    user.cold_balance = user
-                        .cold_wallet
-                        .and_then(|principal| balances.get(&account(principal)).copied())
-                        .unwrap_or_default();
-                }
-                self.balances = balances;
-                self.token_fees_burned = total_fees;
-            }
-            Err(err) => self
-                .logger
-                .critical(format!("the token ledger is inconsistent: {}", err)),
-        }
+
         if self.principal_to_user(id()).is_none() {
             let canister_id = id();
             let system_user_id = MAX_USER_ID;
@@ -643,27 +635,105 @@ impl State {
             self.users.insert(system_user_id, system_user);
             self.principals.insert(canister_id, system_user_id);
         }
-        if !self.realms.contains_key(CONFIG.dao_realm) {
-            self.realms.insert(
-                CONFIG.dao_realm.to_string(),
-                Realm::new(
-                    "The default DAO realm. ".to_string()
-                        + "The controller list is updated weekly according to the stalwarts list.",
-                ),
-            );
-        }
-        if !self.realms.contains_key(CONFIG.stalwarts_realm) {
-            self.realms.insert(
-                CONFIG.stalwarts_realm.to_string(),
-                Realm::new("The default stalwarts realm. Only stalwarts can post here.".into()),
-            );
-        }
-        if self.auction.amount == 0 {
-            self.auction.amount = CONFIG.weekly_auction_size_tokens_max;
-        }
-        self.refresh_signing_fee();
         self.last_upgrade = time();
         self.timers.last_hourly = time();
+    }
+
+    pub fn is_admin(&self, principal: Principal) -> bool {
+        self.admins.contains(&principal)
+    }
+
+    pub fn is_user_banned(&self, user_id: UserId) -> bool {
+        self.users
+            .get(&user_id)
+            .map(|u| u.deactivated)
+            .unwrap_or(false)
+    }
+
+    pub fn admin_toggle_ban_user(
+        &mut self,
+        admin: Principal,
+        user_id: UserId,
+    ) -> Result<bool, String> {
+        if !self.is_admin(admin) {
+            return Err("admin access required".into());
+        }
+        let target_principal = self.users.get(&user_id).ok_or("user not found")?.principal;
+        if self.is_admin(target_principal) {
+            return Err("cannot suspend an admin account".into());
+        }
+        let user = self.users.get_mut(&user_id).ok_or("user not found")?;
+        user.deactivated = !user.deactivated;
+        if user.deactivated {
+            user.deactivate();
+        }
+        Ok(user.deactivated)
+    }
+
+    pub fn admin_delete_space(
+        &mut self,
+        admin: Principal,
+        space_id: RealmId,
+    ) -> Result<(), String> {
+        if !self.is_admin(admin) {
+            return Err("admin access required".into());
+        }
+        let space_id = space_id.to_uppercase();
+        let posts = self
+            .realms
+            .get(&space_id)
+            .ok_or("Space not found")?
+            .posts
+            .clone();
+        for post_id in posts {
+            post::change_realm(self, post_id, None);
+        }
+        self.realms.remove(&space_id);
+        for user in self.users.values_mut() {
+            user.realms.retain(|r| r != &space_id);
+            user.controlled_realms.remove(&space_id);
+        }
+        Ok(())
+    }
+
+    pub fn admin_set_media_bucket(
+        &mut self,
+        admin: Principal,
+        bucket_id: String,
+    ) -> Result<(), String> {
+        if !self.is_admin(admin) {
+            return Err("admin access required".into());
+        }
+        if bucket_id.trim().is_empty() {
+            self.media_bucket = None;
+            return Ok(());
+        }
+        let principal = Principal::from_text(bucket_id.trim()).map_err(|e| e.to_string())?;
+        self.media_bucket = Some(principal);
+        Ok(())
+    }
+
+    pub fn admin_add_domain(&mut self, admin: Principal, domain: String) -> Result<(), String> {
+        if !self.is_admin(admin) {
+            return Err("admin access required".into());
+        }
+        let domain = domain.trim().to_lowercase();
+        if domain.is_empty() || domain.contains('/') || domain.contains(' ') {
+            return Err("invalid domain".into());
+        }
+        self.domains.entry(domain).or_default();
+        assets::add_domains(&self.domains);
+        assets::certify();
+        Ok(())
+    }
+
+    pub fn admin_add_admin(&mut self, admin: Principal, new_admin: String) -> Result<(), String> {
+        if !self.is_admin(admin) {
+            return Err("admin access required".into());
+        }
+        let principal = Principal::from_text(new_admin.trim()).map_err(|e| e.to_string())?;
+        self.admins.insert(principal);
+        Ok(())
     }
 
     pub fn hot_posts(
@@ -835,7 +905,7 @@ impl State {
         Ok(())
     }
 
-    fn new_user(
+    pub(crate) fn new_user(
         &mut self,
         principal: Principal,
         timestamp: u64,
@@ -1390,27 +1460,8 @@ impl State {
         }
     }
 
-    async fn daily_chores(now: Time) {
+    async fn daily_chores(_now: Time) {
         mutate(|state| {
-            for proposal_id in state
-                .proposals
-                .iter()
-                .filter_map(|p| (p.status == Status::Open).then_some(p.id))
-                .collect::<Vec<_>>()
-            {
-                if let Err(err) = proposals::execute_proposal(state, proposal_id, now) {
-                    state
-                        .logger
-                        .error(format!("couldn't execute last proposal: {:?}", err));
-                }
-            }
-
-            if !state.emergency_binary.is_empty() {
-                state.logger.info("An emergency release is pending! 🚨");
-            }
-
-            state.recompute_stalwarts(now);
-
             if let Err(err) = state.archive_cold_data() {
                 state
                     .logger
@@ -1431,7 +1482,6 @@ impl State {
     pub async fn fetch_xdr_rate() {
         let e8s_for_one_xdr = canisters::coins_for_one_xdr("ICP")
             .await
-            // by default use ~$5/ICP
             .unwrap_or(28082976);
         mutate(|state| {
             state.e8s_for_one_xdr = e8s_for_one_xdr;
@@ -1445,7 +1495,6 @@ impl State {
     #[cfg(any(test, feature = "dev"))]
     pub fn reset_xdr_rate_for_testing() {
         mutate(|state| {
-            // If this is set to 1_000_000 and above, then E2E tests fail.
             state.e8s_for_one_xdr = 900_000;
         });
     }
@@ -1455,36 +1504,10 @@ impl State {
             state.backup_exists = false;
             state.conclude_polls(now);
         });
-
-        State::fetch_xdr_rate().await;
-
-        canisters::top_up().await;
-
-        #[cfg(not(any(feature = "dev", feature = "staging")))]
-        nns_proposals::work(now).await;
     }
 
     pub async fn chores(now: u64) {
-        // This should always be the first operation executed in the chores routine so
-        // that the upgrades are never blocked by a panic in any other routine.
-        if mutate(|state| {
-            state.execute_pending_emergency_upgrade(false) || state.execute_pending_upgrade(false)
-        }) {
-            return;
-        }
-
         let timers = read(|state| state.timers.clone());
-
-        let log = |state: &mut State, frequency, threshold_millis| {
-            let instructions = performance_counter(0) / 1000000000;
-            let millis = (time() - now) / MILLISECOND;
-            if millis > threshold_millis {
-                state.logger.debug(format!(
-                    "{} routine finished after `{}` ms and used `{}B` instructions.",
-                    frequency, millis, instructions
-                ))
-            }
-        };
 
         if timers.last_weekly + WEEK < now && !timers.weekly_pending {
             mutate(|state| {
@@ -1494,7 +1517,6 @@ impl State {
             mutate(|state| {
                 state.timers.last_weekly += WEEK;
                 state.timers.weekly_pending = false;
-                log(state, "Weekly", 0);
             });
         }
 
@@ -1506,18 +1528,6 @@ impl State {
             mutate(|state| {
                 state.timers.last_daily += DAY;
                 state.timers.daily_pending = false;
-                let (nns, polls) = (state.pending_nns_proposals.len(), state.pending_polls.len());
-                let mut log_line = String::new();
-                if nns > 0 {
-                    log_line.push_str(&format!("Pending NNS proposals: `{}`. ", nns,));
-                }
-                if polls > 0 {
-                    log_line.push_str(&format!("Pending polls: `{}`.", polls,));
-                }
-                if !log_line.is_empty() {
-                    state.logger.debug(log_line);
-                }
-                log(state, "Daily", 1000);
             });
         }
 
@@ -1529,58 +1539,14 @@ impl State {
             mutate(|state| {
                 state.timers.last_hourly += HOUR;
                 state.timers.hourly_pending = false;
-                log(state, "Hourly", 3 * 60_000);
             });
         }
     }
 
     pub async fn weekly_chores(now: Time) {
         mutate(|state| {
-            state.distribution_reports.clear();
-            state.distribute_realm_revenue(now);
-            state.refresh_signing_fee();
-        });
-
-        #[cfg(not(feature = "dev"))] // don't create rewards in e2e tests
-        State::random_reward().await;
-
-        let remaining_supply = read(|state| state.remaining_supply());
-        // only if we're below the maximum supply, we close the auction
-        let auction_revenue = if remaining_supply > 0 {
-            let (market_price, revenue) = auction::close_auction().await;
-            mutate(|state| {
-                state.logger.info(format!(
-                    "Established market price: `{}` ICP per `1` ${}; next auction size: `{}` tokens",
-                    display_tokens(market_price * token::base(), 8),
-                    CONFIG.token_symbol,
-                    state.auction.amount / token::base()
-                ));
-
-                state.minting_mode = true;
-                state.mint(market_price);
-                state.minting_mode = false;
-            });
-            revenue
-        } else {
-            0
-        };
-
-        State::distribute_icp().await;
-
-        mutate(|state| {
-            for summary in &state.distribution_reports {
-                state.logger.info(format!(
-                    "{}: {} [[details](#/distribution)]",
-                    summary.title, summary.description
-                ));
-            }
-
             state.clean_up(now);
-            state.logger.clean_up(now - 6 * MONTH);
-
-            // these burned credits go to the next week
-            state.distribute_revenue_from_icp(auction_revenue);
-            state.charge_for_inactivity(now);
+            state.logger.clean_up(now.saturating_sub(6 * MONTH));
         });
     }
 
@@ -2142,26 +2108,29 @@ impl State {
         watermark: Time,
         with_comments: bool,
     ) -> Box<dyn Iterator<Item = &'a Post> + 'a> {
+        let domain = if self.domains.contains_key(&domain) {
+            domain
+        } else {
+            "localhost".to_string()
+        };
         let Some(cfg) = self.domains.get(&domain) else {
             return Box::new(std::iter::empty());
         };
 
-        // This is generic filter that needs to be applied on all non-empty iterators.
+        // Generic filter applied to all non-empty iterators: exclude deleted posts and banned users.
         let post_filter = |iter: Box<dyn Iterator<Item = &'a Post> + 'a>| {
             Box::new(
                 iter.take_while(move |post| post.creation_timestamp() >= watermark)
-                    .filter(move |post| !post.is_deleted()),
+                    .filter(move |post| !post.is_deleted() && !self.is_user_banned(post.user)),
             )
         };
 
-        // Realm specified.
+        // Space specified.
         if let Some(realm_id) = realm_id {
-            // If the specified realm does not satisfy the domain config, we have no data.
             if !cfg.realm_visible(realm_id) {
                 return Box::new(std::iter::empty());
             };
 
-            // If realm is ok, simply iterate over all posts of this realm.
             if let Some(realm) = self.realms.get(realm_id) {
                 return post_filter(Box::new(
                     realm
@@ -2174,7 +2143,6 @@ impl State {
             }
         }
 
-        // If realm is not set, we need a domain-specific filter.
         let Some(domain_filter) = domain_realm_post_filter(self, &domain, None) else {
             return Box::new(std::iter::empty());
         };
@@ -2692,83 +2660,14 @@ impl State {
         }
 
         let post = Post::get(self, &post_id).ok_or("no post found")?.clone();
-        if self.principal_to_user(principal).map(|user| user.id) != Some(post.user) {
+        let is_author = self.principal_to_user(principal).map(|user| user.id) == Some(post.user);
+        if !is_author && !self.is_admin(principal) {
             return Err("not authorized".into());
         }
 
-        let comments_tree_penalty =
-            post.tree_size as Credits * CONFIG.post_deletion_penalty_factor as Credits;
-        let rewards = config::reaction_rewards();
-        let reaction_costs = post
-            .reactions
-            .iter()
-            .filter_map(|(r_id, users)| {
-                let cost = rewards.get(r_id).copied().unwrap_or_default();
-                (cost > 0).then_some((users, cost as Credits))
-            })
-            .collect::<Vec<_>>();
-
-        let costs: Credits = CONFIG.post_cost
-            + reaction_costs.iter().map(|(_, cost)| *cost).sum::<u64>()
-            + comments_tree_penalty;
-        if costs
-            > self
-                .users
-                .get(&post.user)
-                .ok_or("user not found")?
-                .credits()
-        {
-            return Err(format!(
-                "not enough credits (this post requires {} credits to be deleted)",
-                costs
-            ));
+        if let Some(Extension::Poll(_)) = &post.extension {
+            self.pending_polls.remove(&post_id);
         }
-
-        let mut rewards_penalty = post.children.len() as i64 * CONFIG.response_reward as i64;
-
-        // refund rewards
-        for (users, amount) in reaction_costs {
-            for user_id in users {
-                self.credit_transfer(
-                    post.user,
-                    *user_id,
-                    amount,
-                    0,
-                    Destination::Credits,
-                    format!("rewards refund after deletion of post {}", post.id),
-                    None,
-                )?;
-                rewards_penalty = rewards_penalty.saturating_add(amount as i64);
-            }
-        }
-
-        // penalize for comments tree destruction
-        self.charge_in_realm(
-            post.user,
-            CONFIG.post_cost + comments_tree_penalty,
-            post.realm.as_ref(),
-            format!("deletion of post [{0}](#/post/{0})", post.id),
-        )?;
-
-        // subtract all rewards from rewards
-        let user = self.users.get_mut(&post.user).expect("user not found");
-        user.change_rewards(
-            -rewards_penalty,
-            format!("deletion of post [{0}](#/post/{0})", post.id),
-        );
-        user.post_reports.remove(&post.id);
-
-        match &post.extension {
-            Some(Extension::Proposal(proposal_id)) => {
-                if let Some(proposal) = self.proposals.iter_mut().find(|p| &p.id == proposal_id) {
-                    proposal.status = Status::Cancelled
-                }
-            }
-            Some(Extension::Poll(_)) => {
-                self.pending_polls.remove(&post_id);
-            }
-            _ => {}
-        };
 
         Post::mutate(self, &post_id, |post| {
             post.delete(versions.clone());
@@ -2791,123 +2690,43 @@ impl State {
             return Err("post deleted".into());
         }
 
-        let delta: i64 = match CONFIG.reactions.iter().find(|(id, _)| id == &reaction) {
-            Some((_, delta)) => *delta,
-            _ => return Err("unknown reaction".into()),
-        };
+        if !CONFIG.reactions.iter().any(|(id, _)| id == &reaction) {
+            return Err("unknown reaction".into());
+        }
 
         let user = self
             .principal_to_user(principal)
             .ok_or("no user for principal found")?;
 
-        if user.credits() <= delta.unsigned_abs() {
-            return Err("not enough credits".into());
-        }
-
-        if post.user == user.id {
-            return Err("reactions to own posts are forbidden".into());
-        }
-
-        if post
-            .reactions
-            .values()
-            .flatten()
-            .any(|user_id| user_id == &user.id)
-        {
-            return Err("multiple reactions are forbidden".into());
+        if user.deactivated {
+            return Err("account suspended".into());
         }
 
         let user_id = user.id;
-        let user_credits = user.credits();
-        let user_balance = user.total_balance();
-        let user_controversial = user.controversial();
 
-        let log = format!("reaction to post [{0}](#/post/{0})", post_id);
-        // Users initiate a credit transfer for upvotes, but burn their own credits on
-        // downvotes + credits and rewards of the author
-        if delta < 0 {
-            if self
-                .users
-                .get(&post.user)
-                .map(|user| user.blacklist.contains(&user_id))
-                .unwrap_or_default()
-            {
-                return Err("you cannot react on posts of users who blocked you".into());
-            }
-
-            self.charge_in_realm(
-                user_id,
-                delta.unsigned_abs().min(user_credits),
-                post.realm.as_ref(),
-                log.clone(),
-            )?;
-            self.users
-                .get_mut(&post.user)
-                .expect("user not found")
-                .change_rewards(delta, log.clone());
-            let credit_balance = self
-                .users
-                .get(&post.user)
-                .expect("user not found")
-                .credits();
-            if credit_balance > 0 {
-                self.charge_in_realm(
-                    post.user,
-                    delta.unsigned_abs().min(credit_balance),
-                    post.realm.as_ref(),
-                    log,
-                )
-                .expect("couldn't charge user");
-            }
-        } else {
-            let mut recipients = vec![post.user];
-            if let Some(Extension::Repost(post_id)) = post.extension.as_ref() {
-                let original_author = Post::get(self, post_id)
-                    .expect("no reposted post found")
-                    .user;
-                if original_author != user_id {
-                    recipients.push(original_author)
-                }
-            }
-            let eff_delta = (delta / recipients.len() as i64) as Credits;
-            let fee = config::reaction_fee(reaction);
-            let eff_fee = fee / recipients.len() as Credits;
-            // If delta is not divisible by 2, the original post author gets the rest
-            let params = vec![
-                (eff_delta, eff_fee),
-                (
-                    eff_delta
-                        + delta.saturating_sub(recipients.len() as i64 * eff_delta as i64)
-                            as Credits,
-                    eff_fee + fee.saturating_sub(recipients.len() as u64 * eff_fee) as Credits,
-                ),
-            ];
-
-            for (recipient, (delta, fee)) in recipients.iter().zip(params) {
-                self.credit_transfer(
-                    user_id,
-                    *recipient,
-                    delta,
-                    fee,
-                    Destination::Rewards,
-                    log.clone(),
-                    None,
-                )?;
-            }
-
-            // We only count actually burned credits from positive reactions.
-            self.principal_to_user_mut(principal)
-                .expect("no user for principal found")
-                .add_burned_credits(fee);
+        if self
+            .users
+            .get(&post.user)
+            .map(|author| author.blacklist.contains(&user_id))
+            .unwrap_or_default()
+        {
+            return Err("you cannot react on posts of users who blocked you".into());
         }
 
         self.principal_to_user_mut(principal)
             .expect("no user for principal found")
             .last_activity = time;
+
         Post::mutate(self, &post_id, |post| {
-            post.reactions.entry(reaction).or_default().insert(user_id);
-            if !user_controversial {
-                post.make_hot(user_id, user_balance);
+            let entry = post.reactions.entry(reaction).or_default();
+            if entry.contains(&user_id) {
+                entry.remove(&user_id);
+                if entry.is_empty() {
+                    post.reactions.remove(&reaction);
+                }
+            } else {
+                entry.insert(user_id);
+                post.make_hot(user_id, 0);
             }
             Ok(())
         })

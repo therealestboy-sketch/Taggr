@@ -1,9 +1,7 @@
 use super::MINUTE;
 use crate::{updates::raw_caller, *};
 use assets::{add_value_to_certify, certify, root_hash};
-use base64::{engine::general_purpose, Engine as _};
 use candid::{CandidType, Deserialize, Nat, Principal};
-use ic_cdk_macros::{query, update};
 use ic_certified_map::leaf_hash;
 use icrc_ledger_types::{
     icrc::generic_value::ICRC3Value,
@@ -120,7 +118,7 @@ pub struct Standard {
     url: String,
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_metadata() -> Vec<(String, Value)> {
     vec![
         ("icrc1:symbol".into(), Value::Text(icrc1_symbol())),
@@ -130,48 +128,40 @@ fn icrc1_metadata() -> Vec<(String, Value)> {
             Value::Nat(icrc1_decimals() as u128),
         ),
         ("icrc1:fee".into(), Value::Nat(icrc1_fee())),
-        (
-            "icrc1:logo".into(),
-            Value::Text(format!(
-                "data:image/png;base64,{}",
-                general_purpose::STANDARD
-                    .encode(include_bytes!("../../frontend/assets/apple-touch-icon.png"))
-            )),
-        ),
     ]
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_name() -> String {
     CONFIG.name.into()
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_symbol() -> String {
     CONFIG.token_symbol.into()
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_decimals() -> u8 {
     CONFIG.token_decimals
 }
 
-#[query]
+#[allow(dead_code)]
 pub fn icrc1_fee() -> u128 {
     CONFIG.transaction_fee as u128
 }
 
-#[query]
+#[allow(dead_code)]
 pub fn icrc1_total_supply() -> u128 {
     read(|state| state.balances.values().copied().sum::<u64>() as u128)
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_minting_account() -> Option<Account> {
     Some(account(Principal::anonymous()))
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_balance_of(account: Account) -> u128 {
     let mut account = account;
     if account
@@ -180,26 +170,17 @@ fn icrc1_balance_of(account: Account) -> u128 {
         .map(|val| val.iter().all(|b| b == &0))
         .unwrap_or(true)
     {
-        account.subaccount = None
+        account.subaccount = None;
     };
     read(|state| state.balances.get(&account).copied().unwrap_or_default() as u128)
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc1_supported_standards() -> Vec<Standard> {
-    vec![
-        Standard {
-            name: "ICRC-1".into(),
-            url: "https://github.com/dfinity/ICRC-1/tree/main/standards/ICRC-1".into(),
-        },
-        Standard {
-            name: "ICRC-3".into(),
-            url: "https://github.com/dfinity/ICRC-1/tree/main/standards/ICRC-3".into(),
-        },
-    ]
+    vec![]
 }
 
-#[update]
+#[allow(dead_code)]
 fn icrc1_transfer(args: TransferArgs) -> Result<u128, TransferError> {
     let owner = read(raw_caller).map_err(|err| {
         TransferError::GenericError(GenericError {
@@ -216,10 +197,7 @@ fn icrc1_transfer(args: TransferArgs) -> Result<u128, TransferError> {
     let mut args = args;
     if args.fee.is_none() {
         args.fee = Some(icrc1_fee())
-    }
-    // We reject only smaller fees than expected, to stay backwards compatible in cases where we
-    // reduce the fees.
-    else if args.fee < Some(icrc1_fee()) {
+    } else if args.fee < Some(icrc1_fee()) {
         return Err(TransferError::BadFee(BadFee {
             expected_fee: icrc1_fee(),
         }));
@@ -227,9 +205,10 @@ fn icrc1_transfer(args: TransferArgs) -> Result<u128, TransferError> {
     mutate(|state| transfer(state, time(), owner, args))
 }
 
+#[allow(dead_code)]
 const MAX_TX_RESPONSE: u32 = 500;
 
-#[query]
+#[allow(dead_code)]
 fn icrc3_get_blocks(args: Vec<GetBlocksRequest>) -> GetBlocksResult {
     let blocks: Vec<BlockWithId> = read(|state| {
         args.into_iter()
@@ -249,7 +228,7 @@ fn icrc3_get_blocks(args: Vec<GetBlocksRequest>) -> GetBlocksResult {
     }
 }
 
-#[query]
+#[allow(dead_code)]
 fn get_transactions(req: GetTransactionsRequest) -> GetTransactionsResponse {
     read(|state| {
         let start: u32 = req.start.0.try_into().expect("value too large for u32");
@@ -309,33 +288,17 @@ fn get_transactions(req: GetTransactionsRequest) -> GetTransactionsResponse {
     })
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc3_get_archives(_: GetArchivesArgs) -> GetArchivesResult {
     Default::default()
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc3_supported_block_types() -> Vec<SupportedBlockType> {
-    vec![
-        SupportedBlockType {
-            block_type: "1mint".to_string(),
-            url: "https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md"
-                .to_string(),
-        },
-        SupportedBlockType {
-            block_type: "1burn".to_string(),
-            url: "https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md"
-                .to_string(),
-        },
-        SupportedBlockType {
-            block_type: "1xfer".to_string(),
-            url: "https://github.com/dfinity/ICRC-1/blob/main/standards/ICRC-1/README.md"
-                .to_string(),
-        },
-    ]
+    vec![]
 }
 
-#[query]
+#[allow(dead_code)]
 fn icrc3_get_tip_certificate() -> Option<ICRC3DataCertificate> {
     let certificate = ByteBuf::from(ic_cdk::api::data_certificate()?);
     let hash_tree = root_hash();

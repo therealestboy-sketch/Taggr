@@ -1,109 +1,86 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
     <head>
-        <title>TAGGR</title>
         <meta charset="UTF-8" />
         <meta
             name="viewport"
-            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0"
+            content="width=device-width, initial-scale=1.0, maximum-scale=5.0"
         />
         <base href="/" />
-
-        <meta name="theme-color" content="#111111" />
+        <title>Relay</title>
+        <meta name="theme-color" content="#09090b" />
         <link rel="manifest" href="/manifest.json" />
-        <meta
-            content="https://6qfxa-ryaaa-aaaai-qbhsq-cai.raw.ic0.app/_/raw/social-image.webp"
-            property="og:image"
-        />
-        <meta content="image/webp" property="og:image:type" />
-        <meta content="600" property="og:image:width" />
-        <meta content="314" property="og:image:height" />
-        <meta content="summary_large_image" name="twitter:card" />
-        <meta
-            content="https://6qfxa-ryaaa-aaaai-qbhsq-cai.raw.ic0.app/_/raw/social-image.webp"
-            name="twitter:image"
-        />
-        <meta content="@TaggrNetwork" name="twitter:creator" />
-
         <link rel="icon" type="image/x-icon" href="/favicon.ico" />
         <link
             rel="apple-touch-icon"
             sizes="180x180"
-            href="https://6qfxa-ryaaa-aaaai-qbhsq-cai.raw.ic0.app/_/raw/apple-touch-icon.png"
+            href="/_/raw/apple-touch-icon.png"
         />
         <link rel="preload" href="index.js" as="script" />
-
-        <meta name="apple-mobile-web-app-title" content="TAGGR" />
+        <meta name="apple-mobile-web-app-title" content="Relay" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="mobile-web-app-capable" content="yes" />
         <meta name="mark" content="OG" />
-        <style id="style">
-            a,
+        <style>
+            html,
             body {
-                background: #111111;
-                color: #cbcbbc;
-                font-family: monospace;
+                margin: 0;
+                padding: 0;
+                background: #09090b;
+                color: #f4f4f5;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    BlinkMacSystemFont,
+                    "Segoe UI",
+                    Roboto,
+                    sans-serif;
             }
-            #logo {
-                margin-top: 5em;
-                margin-bottom: 2em;
-                margin-left: auto;
-                margin-right: auto;
-                height: 50px;
-            }
-            #logo_container {
+            #boot-splash {
+                min-height: 100vh;
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-            }
-            path {
-                fill: #cbcbbc;
+                justify-content: center;
+                gap: 14px;
+                color: #71717a;
+                font-size: 13px;
             }
         </style>
     </head>
     <body>
-        <div id="upgrade_banner" class="banner vertically_spaced"></div>
-        <div id="logo_container">
-            <div
-                style="
-                    margin-top: 20%;
-                    margin-bottom: 5em;
-                    display: flex;
-                    align-items: center;
-                "
-            >
+        <div id="root">
+            <div id="boot-splash">
                 <svg
-                    height="50px"
-                    version="1.0"
-                    viewBox="0 0 756 230"
+                    width="36"
+                    height="36"
+                    viewBox="0 0 32 32"
+                    fill="none"
                     xmlns="http://www.w3.org/2000/svg"
                 >
-                    <g transform="translate(0 230) scale(.1 -.1)">
-                        <path
-                            d="m0 2070v-230h270 270v-920-920h180 180v920 920h270 270v230 230h-720-720v-230z"
-                        />
-                        <path
-                            d="m1800 2070v-230h-90-90v-920-920h180 180v460 460h270 270v-460-460h180 180v920 920h-90-90v230 230h-450-450v-230zm720-460v-230h-270-270v230 230h270 270v-230z"
-                        />
-                        <path
-                            d="m3240 2070v-230h-90-90v-690-690h90 90v-230-230h540 540v230 230h90 90v460 460h-270-270v-230-230h90 90v-230-230h-360-360v690 690h450 450v230 230h-540-540v-230z"
-                        />
-                        <path
-                            d="m4860 2070v-230h-90-90v-690-690h90 90v-230-230h540 540v230 230h90 90v460 460h-270-270v-230-230h90 90v-230-230h-360-360v690 690h450 450v230 230h-540-540v-230z"
-                        />
-                        <path
-                            d="m6300 1150v-1150h180 180v460 460h270 270v-460-460h180 180v460 460h-90-90v230 230h90 90v230 230h-90-90v230 230h-540-540v-1150zm900 460v-230h-270-270v230 230h270 270v-230z"
-                        />
-                    </g>
+                    <rect width="32" height="32" rx="8" fill="#3b82f6" />
+                    <path
+                        d="M7 16a9 9 0 0 1 18 0"
+                        stroke="#fff"
+                        stroke-width="2.4"
+                        stroke-linecap="round"
+                    />
+                    <path
+                        d="M11 16a5 5 0 0 1 10 0"
+                        stroke="#fff"
+                        stroke-width="2.4"
+                        stroke-linecap="round"
+                    />
+                    <circle cx="16" cy="16" r="2" fill="#fff" />
+                    <path
+                        d="M16 18v7"
+                        stroke="#fff"
+                        stroke-width="2.4"
+                        stroke-linecap="round"
+                    />
                 </svg>
+                <span>Loading...</span>
             </div>
-            Loading...
-        </div>
-        <div id="preview" data-testid="image-preview"></div>
-        <div id="app" style="display: none">
-            <div id="header"></div>
-            <div id="stack"></div>
-            <div id="footer"></div>
         </div>
     </body>
 </html>

@@ -24,33 +24,30 @@ function getGatewayPort() {
 }
 
 function initCanisterEnv() {
-    // icp-cli records canister IDs per environment. Managed networks (local)
-    // live in .icp/cache; connected networks (ic, staging, ...) are committed
-    // under .icp/data.
+    if (process.env.CANISTER_ID) {
+        return {
+            CANISTER_ID: process.env.CANISTER_ID,
+            BUCKET_CANISTER_ID: process.env.BUCKET_CANISTER_ID || "",
+        };
+    }
+
     const mappingPath =
         NETWORK === "local"
             ? path.resolve(".icp", "cache", "mappings", "local.ids.json")
             : path.resolve(".icp", "data", "mappings", `${NETWORK}.ids.json`);
 
-    let mapping;
     try {
-        mapping = require(mappingPath);
+        const mapping = require(mappingPath);
+        return {
+            CANISTER_ID: mapping["taggr"] || mapping["relay"] || "",
+            BUCKET_CANISTER_ID: mapping["bucket"] || "",
+        };
     } catch (error) {
-        if (NETWORK === "local") {
-            console.log(`No canister ID mapping found at ${mappingPath}`);
-            return {};
-        }
-        throw new Error(
-            `No canister ID mapping found at ${mappingPath}; ` +
-                `run "icp deploy -e ${NETWORK}" or restore the committed mapping`,
+        console.log(
+            `No canister ID mapping found at ${mappingPath}; falling back to runtime host detection`,
         );
+        return { CANISTER_ID: "", BUCKET_CANISTER_ID: "" };
     }
-
-    if (NETWORK !== "local" && !mapping["taggr"]) {
-        throw new Error(`No "taggr" entry in ${mappingPath}`);
-    }
-
-    return { CANISTER_ID: mapping["taggr"] };
 }
 const canisterEnvVariables = initCanisterEnv();
 
@@ -125,7 +122,11 @@ module.exports = {
                 },
                 exclude: [/node_modules/],
             },
-            { test: /\.(md|css|svg)/i, use: "raw-loader" },
+            {
+                test: /\.css$/i,
+                use: ["style-loader", "css-loader", "postcss-loader"],
+            },
+            { test: /\.(md|svg)$/i, use: "raw-loader" },
         ],
     },
     plugins: [
@@ -161,6 +162,8 @@ module.exports = {
         new webpack.EnvironmentPlugin({
             NODE_ENV: "development",
             DFX_NETWORK: NETWORK,
+            CANISTER_ID: "",
+            BUCKET_CANISTER_ID: "",
             ...canisterEnvVariables,
         }),
         new webpack.ProvidePlugin({
