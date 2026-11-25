@@ -30,7 +30,7 @@ export const Composer: React.FC<ComposerProps> = ({
     compact = false,
     onPublished,
 }) => {
-    const { api, user, appInfo, spaces, signIn, refreshUser, bumpFeed, toast } =
+    const { api, user, appInfo, spaces, refreshUser, bumpFeed, toast } =
         useApp();
     const [text, setText] = useState("");
     const [space, setSpace] = useState<string>(defaultSpace || "");
@@ -43,20 +43,7 @@ export const Composer: React.FC<ComposerProps> = ({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
 
     if (!user) {
-        return (
-            <div className="px-4 py-4 border-b ui-border flex items-center justify-between gap-3">
-                <div className="text-sm ui-text-secondary">
-                    Sign in with a Passkey via Internet Identity to join the
-                    conversation.
-                </div>
-                <button
-                    onClick={signIn}
-                    className="px-4 py-2 rounded-full ui-accent-bg text-xs font-semibold shrink-0 cursor-pointer"
-                >
-                    Sign in
-                </button>
-            </div>
-        );
+        return null;
     }
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {

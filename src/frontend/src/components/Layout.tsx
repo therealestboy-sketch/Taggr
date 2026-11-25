@@ -64,6 +64,10 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
     };
 
     const handleFocusComposer = () => {
+        if (!user) {
+            signIn();
+            return;
+        }
         if (route.name !== "home") {
             navigate("/");
         }
