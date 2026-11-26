@@ -1,26 +1,40 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import {
     ArrowLeft,
+    Ban,
+    Calendar,
     Camera,
     ExternalLink,
+    Image as ImageIcon,
     Loader2,
     ShieldAlert,
+    X,
 } from "lucide-react";
 import { expandMeta } from "../api";
 import { useApp } from "../app-context";
 import { BRAND } from "../brand";
 import { Avatar } from "../components/Avatar";
 import { PostCard } from "../components/PostCard";
-import { currentDomain } from "../env";
+import { bucketImageUrl, currentDomain } from "../env";
 import { navigate } from "../router";
-import { ApiResult, Post, PostMeta, User } from "../types";
+import { ApiResult, Post, PostMeta, User, UserData } from "../types";
 import {
     avatarGradient,
     compressAvatarFile,
     compressBannerFile,
+    extractBlobImages,
     formatBytes,
+    formatJoinedDate,
     resolveMediaRef,
 } from "../utils";
+
+type ProfileTab = "posts" | "replies" | "media";
 
 export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
     const {
@@ -35,10 +49,28 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
     } = useApp();
     const [profile, setProfile] = useState<User | null>(null);
     const [posts, setPosts] = useState<Post[]>([]);
+    const [pinnedPosts, setPinnedPosts] = useState<Post[]>([]);
+    const [activeTab, setActiveTab] = useState<ProfileTab>("posts");
     const [loading, setLoading] = useState(true);
     const [uploadingKind, setUploadingKind] = useState<
         "avatar" | "banner" | null
     >(null);
+
+    // Followers / Following modal state
+    const [listModal, setListModal] = useState<
+        "followers" | "following" | null
+    >(null);
+    const [listUsers, setListUsers] = useState<{ id: number; name: string }[]>(
+        [],
+    );
+    const [listLoading, setListLoading] = useState(false);
+
+    // Inline Edit Profile modal state
+    const [editModalOpen, setEditModalOpen] = useState(false);
+    const [editDisplayName, setEditDisplayName] = useState("");
+    const [editBio, setEditBio] = useState("");
+    const [editWebsite, setEditWebsite] = useState("");
+    const [savingProfile, setSavingProfile] = useState(false);
 
     const avatarInputRef = useRef<HTMLInputElement | null>(null);
     const bannerInputRef = useRef<HTMLInputElement | null>(null);
@@ -53,12 +85,22 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
             ]);
             setProfile(u ?? null);
             setPosts((rawPosts || []).map(expandMeta));
+            if (u?.pinned_posts && u.pinned_posts.length > 0) {
+                const rawPinned = await api.query<[Post, PostMeta][]>(
+                    "posts",
+                    u.pinned_posts,
+                );
+                setPinnedPosts((rawPinned || []).map(expandMeta));
+            } else {
+                setPinnedPosts([]);
+            }
         } finally {
             setLoading(false);
         }
     }, [api, handle]);
 
     useEffect(() => {
+        setActiveTab("posts");
         loadProfile();
     }, [loadProfile, feedRefreshKey]);
 
@@ -66,6 +108,102 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
     const isFollowing = Boolean(
         me && profile && me.followees?.includes(profile.id),
     );
+    const isBlocked = Boolean(
+        me && profile && me.blacklist?.includes(profile.id),
+    );
+
+    const handleOpenListModal = async (kind: "followers" | "following") => {
+        if (!profile) return;
+        setListModal(kind);
+        const ids =
+            kind === "followers"
+                ? profile.followers || []
+                : profile.followees || [];
+        if (ids.length === 0) {
+            setListUsers([]);
+            return;
+        }
+        setListLoading(true);
+        try {
+            const map = await api.query<UserData>("users_data", ids);
+            const entries = ids
+                .map((id) => ({
+                    id,
+                    name: map?.[id] || `user_${id}`,
+                }))
+                .filter((x) => Boolean(x.name));
+            setListUsers(entries);
+        } finally {
+            setListLoading(false);
+        }
+    };
+
+    const handleOpenEditProfile = () => {
+        if (!profile) return;
+        setEditDisplayName(profile.settings?.display_name || "");
+        setEditBio(profile.about || "");
+        setEditWebsite(profile.settings?.website || "");
+        setEditModalOpen(true);
+    };
+
+    const handleSaveEditProfile = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!me) return;
+        setSavingProfile(true);
+        try {
+            const nextSettings: { [k: string]: string } = {
+                ...(me.settings || {}),
+            };
+            const cleanDisplay = editDisplayName.trim().slice(0, 50);
+            if (cleanDisplay) nextSettings.display_name = cleanDisplay;
+            else delete nextSettings.display_name;
+
+            const cleanWeb = editWebsite.trim().slice(0, 200);
+            if (cleanWeb) {
+                if (
+                    !cleanWeb.startsWith("https://") &&
+                    !cleanWeb.startsWith("http://")
+                ) {
+                    toast(
+                        "Website URL must start with https:// or http://",
+                        "error",
+                    );
+                    setSavingProfile(false);
+                    return;
+                }
+                nextSettings.website = cleanWeb;
+            } else {
+                delete nextSettings.website;
+            }
+
+            const [settingsRes, userRes] = await Promise.all([
+                api.call<ApiResult<null>>("update_user_settings", nextSettings),
+                api.call<ApiResult<null>>(
+                    "update_user",
+                    null,
+                    editBio.trim(),
+                    [],
+                    false,
+                    "Rewards",
+                    false,
+                ),
+            ]);
+            if (settingsRes && "Err" in settingsRes) {
+                toast(settingsRes.Err, "error");
+                return;
+            }
+            if (userRes && "Err" in userRes) {
+                toast(userRes.Err, "error");
+                return;
+            }
+            await Promise.all([refreshUser(), loadProfile()]);
+            bumpFeed();
+            setEditModalOpen(false);
+            toast("Profile updated");
+        } finally {
+            setSavingProfile(false);
+        }
+    };
 
     const handleUploadProfileMedia = async (
         kind: "avatar" | "banner",
@@ -144,6 +282,23 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
         }
     };
 
+    const handleToggleMute = async () => {
+        if (!profile || !me) return;
+        const res = await api.call<ApiResult<null>>(
+            "toggle_blacklist",
+            profile.id,
+        );
+        if (res && "Err" in res) {
+            toast(res.Err, "error");
+            return;
+        }
+        await refreshUser();
+        toast(
+            isBlocked ? `Unmuted @${profile.name}` : `Muted @${profile.name}`,
+        );
+        bumpFeed();
+    };
+
     const handleAdminToggleBan = async () => {
         if (!profile) return;
         const res = await api.call<ApiResult<boolean>>(
@@ -164,6 +319,37 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
         }
     };
 
+    const pinnedIds = useMemo(
+        () => new Set(pinnedPosts.map((p) => p.id)),
+        [pinnedPosts],
+    );
+    const topLevelPosts = useMemo(
+        () =>
+            posts.filter((p) => p.parent === undefined && !pinnedIds.has(p.id)),
+        [posts, pinnedIds],
+    );
+    const replyPosts = useMemo(
+        () => posts.filter((p) => p.parent !== undefined),
+        [posts],
+    );
+    const mediaItems = useMemo(() => {
+        const items: { postId: number; src: string; alt: string }[] = [];
+        for (const p of posts) {
+            const map: Record<string, string> = {};
+            for (const [key, [offset, len]] of Object.entries(p.files || {})) {
+                const [blobId, bucketId] = key.split("@");
+                if (blobId && bucketId) {
+                    map[blobId] = bucketImageUrl(bucketId, offset, len);
+                }
+            }
+            const { images } = extractBlobImages(p.body || "", map);
+            for (const img of images) {
+                items.push({ postId: p.id, src: img.src, alt: img.alt });
+            }
+        }
+        return items;
+    }, [posts]);
+
     const bannerUrl = resolveMediaRef(profile?.settings?.banner);
     const avatarUrl = resolveMediaRef(profile?.settings?.avatar);
     const displayName = profile?.settings?.display_name?.trim();
@@ -173,6 +359,9 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
         (website.startsWith("https://") || website.startsWith("http://"))
             ? website
             : null;
+    const joinedText = profile
+        ? formatJoinedDate(Number(profile.timestamp))
+        : "";
 
     const usedBytes = appInfo?.storage_used_bytes ?? 0;
     const quotaBytes = appInfo?.storage_quota_bytes ?? 50 * 1024 * 1024;
@@ -284,7 +473,7 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                     </div>
 
                     {/* Profile Header Body */}
-                    <div className="px-4 pb-5 border-b ui-border space-y-4">
+                    <div className="px-4 pb-4 space-y-4">
                         <div className="flex items-end justify-between gap-3 -mt-10 relative z-10">
                             <div className="relative group">
                                 <Avatar
@@ -334,7 +523,7 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                                 {isOwn ? (
                                     <button
                                         type="button"
-                                        onClick={() => navigate("/settings")}
+                                        onClick={handleOpenEditProfile}
                                         className="px-4 py-1.5 rounded-full border ui-border-strong text-xs font-semibold ui-hover cursor-pointer"
                                     >
                                         Edit profile
@@ -354,6 +543,20 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                                                 ? "Following"
                                                 : "Follow"}
                                         </button>
+                                        {me && (
+                                            <button
+                                                type="button"
+                                                onClick={handleToggleMute}
+                                                className="p-1.5 rounded-full border ui-border-strong ui-text-secondary ui-hover cursor-pointer"
+                                                title={
+                                                    isBlocked
+                                                        ? `Unmute @${profile.name}`
+                                                        : `Mute @${profile.name}`
+                                                }
+                                            >
+                                                <Ban className="w-3.5 h-3.5" />
+                                            </button>
+                                        )}
                                         {appInfo?.is_admin && (
                                             <button
                                                 type="button"
@@ -402,37 +605,53 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                                     {profile.about}
                                 </p>
                             )}
-                            {safeWebsite && (
-                                <a
-                                    href={safeWebsite}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs ui-accent-text hover:underline pt-0.5"
-                                >
-                                    <ExternalLink className="w-3 h-3" />
-                                    <span>
-                                        {safeWebsite.replace(
-                                            /^https?:\/\//,
-                                            "",
-                                        )}
+                            <div className="flex items-center flex-wrap gap-x-4 gap-y-1 pt-0.5 text-xs ui-text-muted">
+                                {safeWebsite && (
+                                    <a
+                                        href={safeWebsite}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 ui-accent-text hover:underline"
+                                    >
+                                        <ExternalLink className="w-3 h-3" />
+                                        <span>
+                                            {safeWebsite.replace(
+                                                /^https?:\/\//,
+                                                "",
+                                            )}
+                                        </span>
+                                    </a>
+                                )}
+                                {joinedText && (
+                                    <span className="inline-flex items-center gap-1">
+                                        <Calendar className="w-3 h-3" />
+                                        <span>{joinedText}</span>
                                     </span>
-                                </a>
-                            )}
+                                )}
+                            </div>
                         </div>
 
                         <div className="flex items-center flex-wrap gap-4 text-xs">
-                            <span>
+                            <button
+                                type="button"
+                                onClick={() => handleOpenListModal("following")}
+                                className="hover:underline cursor-pointer"
+                            >
                                 <strong className="ui-text">
                                     {profile.followees?.length || 0}
                                 </strong>{" "}
                                 <span className="ui-text-muted">Following</span>
-                            </span>
-                            <span>
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleOpenListModal("followers")}
+                                className="hover:underline cursor-pointer"
+                            >
                                 <strong className="ui-text">
                                     {profile.followers?.length || 0}
                                 </strong>{" "}
                                 <span className="ui-text-muted">Followers</span>
-                            </span>
+                            </button>
                             <span>
                                 <strong className="ui-text">
                                     {profile.realms?.length || 0}
@@ -464,24 +683,306 @@ export const ProfilePage: React.FC<{ handle: string }> = ({ handle }) => {
                         )}
                     </div>
 
-                    {posts.length === 0 ? (
-                        <div className="py-12 text-center text-sm ui-text-muted">
-                            No posts yet.
-                        </div>
-                    ) : (
-                        posts.map((p) => (
-                            <PostCard
-                                key={p.id}
-                                post={p}
-                                onDeleted={(id) =>
-                                    setPosts((prev) =>
-                                        prev.filter((x) => x.id !== id),
-                                    )
-                                }
-                            />
-                        ))
+                    {/* Profile Content Tabs */}
+                    <div className="grid grid-cols-3 border-y ui-border text-xs sm:text-sm font-medium">
+                        {(
+                            [
+                                {
+                                    id: "posts",
+                                    label: "Posts",
+                                    count:
+                                        topLevelPosts.length +
+                                        pinnedPosts.length,
+                                },
+                                {
+                                    id: "replies",
+                                    label: "Replies",
+                                    count: replyPosts.length,
+                                },
+                                {
+                                    id: "media",
+                                    label: "Media",
+                                    count: mediaItems.length,
+                                },
+                            ] as const
+                        ).map((t) => (
+                            <button
+                                key={t.id}
+                                type="button"
+                                onClick={() => setActiveTab(t.id)}
+                                className={`py-3 text-center relative ui-hover transition cursor-pointer ${
+                                    activeTab === t.id
+                                        ? "ui-text font-semibold"
+                                        : "ui-text-muted"
+                                }`}
+                            >
+                                <span>{t.label}</span>
+                                {t.count > 0 && (
+                                    <span className="ml-1.5 text-[11px] ui-text-muted tabular-nums">
+                                        {t.count}
+                                    </span>
+                                )}
+                                {activeTab === t.id && (
+                                    <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-12 h-0.5 rounded-full ui-accent-bg" />
+                                )}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Tab Body */}
+                    {activeTab === "posts" && (
+                        <>
+                            {pinnedPosts.map((p) => (
+                                <PostCard
+                                    key={`pinned-${p.id}`}
+                                    post={p}
+                                    pinned
+                                    onDeleted={(id) => {
+                                        setPinnedPosts((prev) =>
+                                            prev.filter((x) => x.id !== id),
+                                        );
+                                        setPosts((prev) =>
+                                            prev.filter((x) => x.id !== id),
+                                        );
+                                    }}
+                                />
+                            ))}
+                            {topLevelPosts.length === 0 &&
+                            pinnedPosts.length === 0 ? (
+                                <div className="py-12 text-center text-sm ui-text-muted">
+                                    No posts yet.
+                                </div>
+                            ) : (
+                                topLevelPosts.map((p) => (
+                                    <PostCard
+                                        key={p.id}
+                                        post={p}
+                                        onDeleted={(id) =>
+                                            setPosts((prev) =>
+                                                prev.filter((x) => x.id !== id),
+                                            )
+                                        }
+                                    />
+                                ))
+                            )}
+                        </>
                     )}
+
+                    {activeTab === "replies" &&
+                        (replyPosts.length === 0 ? (
+                            <div className="py-12 text-center text-sm ui-text-muted">
+                                No replies yet.
+                            </div>
+                        ) : (
+                            replyPosts.map((p) => (
+                                <PostCard
+                                    key={p.id}
+                                    post={p}
+                                    onDeleted={(id) =>
+                                        setPosts((prev) =>
+                                            prev.filter((x) => x.id !== id),
+                                        )
+                                    }
+                                />
+                            ))
+                        ))}
+
+                    {activeTab === "media" &&
+                        (mediaItems.length === 0 ? (
+                            <div className="py-14 text-center space-y-2">
+                                <ImageIcon className="w-6 h-6 mx-auto ui-text-muted opacity-60" />
+                                <p className="text-sm ui-text-muted">
+                                    No photos posted yet.
+                                </p>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-3 gap-1 p-1">
+                                {mediaItems.map((item, idx) => (
+                                    <button
+                                        key={`${item.postId}-${idx}`}
+                                        type="button"
+                                        onClick={() =>
+                                            openLightbox(item.src, item.alt)
+                                        }
+                                        className="group relative aspect-square overflow-hidden rounded-lg ui-surface cursor-pointer"
+                                    >
+                                        <img
+                                            src={item.src}
+                                            alt={item.alt}
+                                            loading="lazy"
+                                            className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
+                                        />
+                                    </button>
+                                ))}
+                            </div>
+                        ))}
                 </>
+            )}
+
+            {/* Followers / Following Modal */}
+            {listModal && profile && (
+                <div
+                    className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+                    onClick={() => setListModal(null)}
+                >
+                    <div
+                        className="w-full max-w-sm max-h-[75vh] flex flex-col rounded-2xl border ui-border-strong ui-surface shadow-2xl overflow-hidden"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="px-4 py-3 border-b ui-border flex items-center justify-between">
+                            <h2 className="font-bold text-sm">
+                                {listModal === "followers"
+                                    ? `Followers of @${profile.name}`
+                                    : `@${profile.name} is following`}
+                            </h2>
+                            <button
+                                type="button"
+                                onClick={() => setListModal(null)}
+                                className="p-1 rounded-full ui-hover ui-text-muted cursor-pointer"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        <div className="overflow-y-auto divide-y ui-border">
+                            {listLoading ? (
+                                <div className="py-10 flex justify-center">
+                                    <Loader2 className="w-5 h-5 animate-spin ui-text-muted" />
+                                </div>
+                            ) : listUsers.length === 0 ? (
+                                <div className="py-10 text-center text-xs ui-text-muted">
+                                    {listModal === "followers"
+                                        ? "No followers yet."
+                                        : "Not following anyone yet."}
+                                </div>
+                            ) : (
+                                listUsers.map((u) => (
+                                    <button
+                                        key={u.id}
+                                        type="button"
+                                        onClick={() => {
+                                            setListModal(null);
+                                            navigate(`/user/${u.name}`);
+                                        }}
+                                        className="w-full px-4 py-3 flex items-center gap-3 ui-hover text-left transition cursor-pointer"
+                                    >
+                                        <Avatar name={u.name} size="sm" />
+                                        <span className="text-sm font-medium ui-text truncate">
+                                            @{u.name}
+                                        </span>
+                                    </button>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Inline Edit Profile Modal */}
+            {editModalOpen && isOwn && (
+                <div
+                    className="fixed inset-0 z-50 bg-black/65 backdrop-blur-sm flex items-center justify-center p-4"
+                    onClick={() => setEditModalOpen(false)}
+                >
+                    <form
+                        onSubmit={handleSaveEditProfile}
+                        onClick={(e) => e.stopPropagation()}
+                        toolname="quick_edit_profile"
+                        tooldescription="Update the signed-in user's display name, bio, and website URL from their profile page."
+                        className="w-full max-w-md rounded-2xl border ui-border-strong ui-surface p-6 shadow-2xl space-y-4"
+                    >
+                        <div className="flex items-center justify-between">
+                            <h2 className="font-bold text-base">
+                                Edit profile
+                            </h2>
+                            <button
+                                type="button"
+                                onClick={() => setEditModalOpen(false)}
+                                className="p-1 rounded-full ui-hover ui-text-muted cursor-pointer"
+                                aria-label="Close edit profile modal"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium ui-text-secondary">
+                                Display name
+                            </label>
+                            <input
+                                type="text"
+                                name="display_name"
+                                toolparamdescription="Public display name shown on profile and posts."
+                                maxLength={50}
+                                value={editDisplayName}
+                                onChange={(e) =>
+                                    setEditDisplayName(e.target.value)
+                                }
+                                placeholder="Your name"
+                                className="w-full rounded-xl ui-surface-2 border ui-border px-3 py-2 text-sm ui-text focus:outline-none"
+                            />
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium ui-text-secondary">
+                                Bio
+                            </label>
+                            <textarea
+                                name="bio"
+                                toolparamdescription="Short public biography shown on your profile."
+                                rows={3}
+                                value={editBio}
+                                onChange={(e) => setEditBio(e.target.value)}
+                                placeholder="Tell people a bit about yourself..."
+                                className="w-full rounded-xl ui-surface-2 border ui-border px-3 py-2 text-sm ui-text focus:outline-none resize-none"
+                            />
+                        </div>
+
+                        <div className="space-y-1">
+                            <label className="text-xs font-medium ui-text-secondary">
+                                Website
+                            </label>
+                            <input
+                                type="url"
+                                name="website"
+                                toolparamdescription="Personal website URL starting with https:// or http://."
+                                maxLength={200}
+                                value={editWebsite}
+                                onChange={(e) => setEditWebsite(e.target.value)}
+                                placeholder="https://example.com"
+                                className="w-full rounded-xl ui-surface-2 border ui-border px-3 py-2 text-sm ui-text focus:outline-none"
+                            />
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setEditModalOpen(false);
+                                    navigate("/settings");
+                                }}
+                                className="text-xs ui-accent-text hover:underline cursor-pointer"
+                            >
+                                Full account settings →
+                            </button>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setEditModalOpen(false)}
+                                    className="px-4 py-2 rounded-full ui-pill text-xs ui-text-secondary ui-hover cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={savingProfile}
+                                    className="px-4 py-2 rounded-full ui-accent-bg text-xs font-semibold disabled:opacity-50 cursor-pointer"
+                                >
+                                    {savingProfile ? "Saving..." : "Save"}
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                </div>
             )}
         </div>
     );

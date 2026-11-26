@@ -4,6 +4,7 @@ import { useApp } from "../app-context";
 import { BRAND } from "../brand";
 import { navigate } from "../router";
 import { ApiResult } from "../types";
+import { spaceBadgeStyle } from "../utils";
 
 export const SpacesPage: React.FC = () => {
     const {
@@ -115,7 +116,13 @@ export const SpacesPage: React.FC = () => {
                                     onClick={() => navigate(`/space/${id}`)}
                                     className="flex items-start gap-3 text-left min-w-0 cursor-pointer"
                                 >
-                                    <div className="w-11 h-11 rounded-2xl ui-surface border ui-border flex items-center justify-center text-sm font-bold ui-accent-text shrink-0">
+                                    <div
+                                        className="w-11 h-11 rounded-2xl flex items-center justify-center text-sm font-bold shrink-0 shadow-xs"
+                                        style={spaceBadgeStyle(
+                                            id,
+                                            sp.label_color,
+                                        )}
+                                    >
                                         {id.slice(0, 2)}
                                     </div>
                                     <div className="space-y-0.5 min-w-0">

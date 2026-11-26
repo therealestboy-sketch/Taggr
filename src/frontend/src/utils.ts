@@ -1,3 +1,4 @@
+import type React from "react";
 import { bucketImageUrl } from "./env";
 
 const AVATAR_GRADIENTS = [
@@ -207,4 +208,102 @@ export async function compressBannerFile(
 
     bitmap.close();
     throw new Error("Cover photo could not be compressed.");
+}
+
+export function formatJoinedDate(timestampNs: number): string {
+    if (!timestampNs) return "";
+    const ms = Math.floor(timestampNs / 1_000_000);
+    if (!Number.isFinite(ms) || ms <= 0) return "";
+    const formatted = new Date(ms).toLocaleDateString("en-GB", {
+        month: "long",
+        year: "numeric",
+    });
+    return `Joined ${formatted}`;
+}
+
+export function formatPollTimeRemaining(
+    createdNs: number,
+    deadlineHours: number,
+): { label: string; ended: boolean } {
+    if (!deadlineHours) return { label: "Open poll", ended: false };
+    const endMs = Math.floor(createdNs / 1_000_000) + deadlineHours * 3_600_000;
+    const diffMs = endMs - Date.now();
+    if (diffMs <= 0) return { label: "Poll ended", ended: true };
+    const hours = Math.floor(diffMs / 3_600_000);
+    if (hours >= 24) {
+        const days = Math.floor(hours / 24);
+        const remHours = hours % 24;
+        return {
+            label:
+                remHours > 0 ? `${days}d ${remHours}h left` : `${days}d left`,
+            ended: false,
+        };
+    }
+    if (hours >= 1) return { label: `${hours}h left`, ended: false };
+    const mins = Math.max(1, Math.floor(diffMs / 60_000));
+    return { label: `${mins}m left`, ended: false };
+}
+
+export function extractYouTubeIds(text: string): string[] {
+    if (!text) return [];
+    const regex =
+        /https?:\/\/(?:www\.|m\.)?(?:youtube\.com\/(?:watch\?(?:[^)\s]*&)?v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/g;
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+        const id = match[1];
+        if (!seen.has(id)) {
+            seen.add(id);
+            ids.push(id);
+        }
+    }
+    return ids.slice(0, 2);
+}
+
+export type ExtractedImage = {
+    blobId: string;
+    src: string;
+    alt: string;
+};
+
+/**
+ * Extracts Relay `/blob/<id>` markdown images into a gallery array so multi-image
+ * posts can render in a clean 1/2/3/4-up grid, returning the remaining text body.
+ */
+export function extractBlobImages(
+    body: string,
+    blobUrlMap: Record<string, string>,
+): { textWithoutImages: string; images: ExtractedImage[] } {
+    if (!body || Object.keys(blobUrlMap).length === 0) {
+        return { textWithoutImages: body, images: [] };
+    }
+    const images: ExtractedImage[] = [];
+    const textWithoutImages = body
+        .replace(/!\[([^\]]*)\]\(\/blob\/([A-Za-z0-9_-]+)\)/g, (m, alt, id) => {
+            const url = blobUrlMap[id];
+            if (!url) return m;
+            images.push({ blobId: id, src: url, alt: alt || "Post image" });
+            return "";
+        })
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    return { textWithoutImages, images };
+}
+
+export function spaceBadgeStyle(
+    seed: string,
+    customColor?: string,
+): React.CSSProperties {
+    const clean = customColor?.trim();
+    if (clean && /^#[0-9a-fA-F]{3,8}$/.test(clean)) {
+        return {
+            background: `linear-gradient(135deg, ${clean}, ${clean}cc)`,
+            color: "#ffffff",
+        };
+    }
+    return {
+        background: avatarGradient(seed),
+        color: "#ffffff",
+    };
 }

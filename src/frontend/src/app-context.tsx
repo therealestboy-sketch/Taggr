@@ -10,9 +10,25 @@ import { AuthClient } from "@icp-sdk/auth/client";
 import { ApiGenerator, Backend } from "./api";
 import { BRAND } from "./brand";
 import { currentDomain, MAINNET_MODE } from "./env";
-import { AppInfo, Space, SpaceId, User, UserData } from "./types";
+import {
+    AppInfo,
+    Post,
+    PostMeta,
+    Space,
+    SpaceId,
+    User,
+    UserData,
+    UserId,
+} from "./types";
 
 export type ThemeMode = "dark" | "light";
+
+export type SuggestedUser = {
+    id: UserId;
+    name: string;
+    displayName?: string;
+    avatar?: string;
+};
 
 type AppContextValue = {
     api: Backend;
@@ -21,6 +37,7 @@ type AppContextValue = {
     appInfo: AppInfo | null;
     spaces: [SpaceId, Space][];
     trendingTags: [string, number][];
+    suggestedUsers: SuggestedUser[];
     usersData: UserData;
     theme: ThemeMode;
     loading: boolean;
@@ -63,6 +80,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
     const [spaces, setSpaces] = useState<[SpaceId, Space][]>([]);
     const [trendingTags, setTrendingTags] = useState<[string, number][]>([]);
+    const [suggestedUsers, setSuggestedUsers] = useState<SuggestedUser[]>([]);
     const [usersData, setUsersData] = useState<UserData>({});
     const [loading, setLoading] = useState(true);
     const [toastState, setToastState] = useState<{
@@ -75,6 +93,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
     } | null>(null);
     const [createSpaceOpen, setCreateSpaceOpen] = useState(false);
     const [feedRefreshKey, setFeedRefreshKey] = useState(0);
+
+    // Close lightbox on Escape
+    useEffect(() => {
+        if (!lightbox) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setLightbox(null);
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [lightbox]);
 
     // Apply theme & brand accent variables
     useEffect(() => {
@@ -106,33 +134,81 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
         return () => clearTimeout(t);
     }, [toastState]);
 
+    const extractAuthors = useCallback(
+        (
+            recent: [Post, PostMeta][] | null,
+        ): {
+            suggestions: SuggestedUser[];
+            names: UserData;
+        } => {
+            const suggestions: SuggestedUser[] = [];
+            const names: UserData = {};
+            const seen = new Set<number>();
+            for (const [post, meta] of recent || []) {
+                if (!meta?.author_name) continue;
+                names[post.user] = meta.author_name;
+                if (!seen.has(post.user)) {
+                    seen.add(post.user);
+                    suggestions.push({
+                        id: post.user,
+                        name: meta.author_name,
+                        displayName: meta.author_display_name,
+                        avatar: meta.author_avatar,
+                    });
+                }
+            }
+            return { suggestions, names };
+        },
+        [],
+    );
+
     const fetchSessionData = useCallback(
         async (clientApi: Backend, authenticated: boolean) => {
             const host = currentDomain();
-            const [info, allSpaces, tags, me, knownUsers] = await Promise.all([
-                clientApi.query<AppInfo>("app_info"),
-                clientApi.query<[SpaceId, Space][]>(
-                    "all_realms",
-                    host,
-                    "popularity",
-                    0,
-                ),
-                clientApi.query<[string, number][]>("recent_tags", host, "", 8),
-                authenticated
-                    ? clientApi.query<User | null>("user", host, [])
-                    : Promise.resolve(null),
-                authenticated
-                    ? clientApi.query<UserData>("users_data", [])
-                    : Promise.resolve(null),
-            ]);
+            const [info, allSpaces, tags, me, knownUsers, recentPosts] =
+                await Promise.all([
+                    clientApi.query<AppInfo>("app_info"),
+                    clientApi.query<[SpaceId, Space][]>(
+                        "all_realms",
+                        host,
+                        "popularity",
+                        0,
+                    ),
+                    clientApi.query<[string, number][]>(
+                        "recent_tags",
+                        host,
+                        "",
+                        8,
+                    ),
+                    authenticated
+                        ? clientApi.query<User | null>("user", host, [])
+                        : Promise.resolve(null),
+                    authenticated
+                        ? clientApi.query<UserData>("users_data", [])
+                        : Promise.resolve(null),
+                    clientApi.query<[Post, PostMeta][]>(
+                        "last_posts",
+                        host,
+                        "",
+                        0,
+                        0,
+                        false,
+                    ),
+                ]);
             if (info) setAppInfo(info);
             if (allSpaces) setSpaces(allSpaces);
             if (tags) setTrendingTags(tags);
             setUser(me ?? null);
-            if (knownUsers)
-                setUsersData((prev) => ({ ...prev, ...knownUsers }));
+            const { suggestions, names } = extractAuthors(recentPosts);
+            setSuggestedUsers(suggestions);
+            setUsersData((prev) => ({
+                ...prev,
+                ...names,
+                ...(knownUsers || {}),
+                ...(me ? { [me.id]: me.name } : {}),
+            }));
         },
-        [],
+        [extractAuthors],
     );
 
     useEffect(() => {
@@ -207,13 +283,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
 
     const refreshDiscovery = useCallback(async () => {
         const host = currentDomain();
-        const [allSpaces, tags] = await Promise.all([
+        const [allSpaces, tags, recentPosts] = await Promise.all([
             api.query<[SpaceId, Space][]>("all_realms", host, "popularity", 0),
             api.query<[string, number][]>("recent_tags", host, "", 8),
+            api.query<[Post, PostMeta][]>("last_posts", host, "", 0, 0, false),
         ]);
         if (allSpaces) setSpaces(allSpaces);
         if (tags) setTrendingTags(tags);
-    }, [api]);
+        if (recentPosts) {
+            const { suggestions, names } = extractAuthors(recentPosts);
+            setSuggestedUsers(suggestions);
+            setUsersData((prev) => ({ ...prev, ...names }));
+        }
+    }, [api, extractAuthors]);
 
     const toggleTheme = useCallback(() => {
         setTheme((prev) => (prev === "dark" ? "light" : "dark"));
@@ -245,6 +327,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             appInfo,
             spaces,
             trendingTags,
+            suggestedUsers,
             usersData,
             theme,
             loading,
@@ -269,6 +352,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
             appInfo,
             spaces,
             trendingTags,
+            suggestedUsers,
             usersData,
             theme,
             loading,

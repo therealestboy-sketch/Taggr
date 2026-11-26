@@ -15,6 +15,8 @@ import {
 import { useApp } from "../app-context";
 import { BRAND } from "../brand";
 import { navigate, Route } from "../router";
+import { ApiResult } from "../types";
+import { spaceBadgeStyle } from "../utils";
 import { Avatar } from "./Avatar";
 import { BrandLogo } from "./BrandLogo";
 
@@ -30,6 +32,7 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
         appInfo,
         spaces,
         trendingTags,
+        suggestedUsers,
         theme,
         toggleTheme,
         signIn,
@@ -62,6 +65,32 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
         await Promise.all([refreshUser(), refreshDiscovery()]);
         toast(joined ? `Joined ${spaceId}` : `Left ${spaceId}`);
     };
+
+    const handleToggleFollowUser = async (userId: number, handle: string) => {
+        if (!user) {
+            toast("Sign in to follow users", "error");
+            return;
+        }
+        const res = await api.call<ApiResult<boolean>>(
+            "toggle_following_user",
+            userId,
+        );
+        if (res && "Ok" in res) {
+            await refreshUser();
+            toast(res.Ok ? `Following @${handle}` : `Unfollowed @${handle}`);
+        }
+    };
+
+    const whoToFollow = suggestedUsers
+        .filter((u) => {
+            if (!user) return true;
+            return (
+                u.id !== user.id &&
+                !user.followees?.includes(u.id) &&
+                !user.blacklist?.includes(u.id)
+            );
+        })
+        .slice(0, 4);
 
     const handleFocusComposer = () => {
         if (!user) {
@@ -372,7 +401,13 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
                                                 }
                                                 className="flex items-center gap-2.5 min-w-0 text-left group cursor-pointer"
                                             >
-                                                <span className="w-8 h-8 rounded-xl ui-surface-2 border ui-border flex items-center justify-center text-xs font-bold ui-accent-text shrink-0">
+                                                <span
+                                                    className="w-8 h-8 rounded-xl flex items-center justify-center text-xs font-bold shrink-0 shadow-xs"
+                                                    style={spaceBadgeStyle(
+                                                        id,
+                                                        sp.label_color,
+                                                    )}
+                                                >
                                                     {id.slice(0, 2)}
                                                 </span>
                                                 <div className="min-w-0">
@@ -417,6 +452,58 @@ export const Layout: React.FC<LayoutProps> = ({ route, children }) => {
                             </p>
                         )}
                     </div>
+
+                    {/* Who to Follow Card */}
+                    {whoToFollow.length > 0 && (
+                        <div className="rounded-2xl ui-surface border ui-border p-4 space-y-3">
+                            <h3 className="font-semibold text-sm tracking-tight">
+                                Who to follow
+                            </h3>
+                            <div className="space-y-2.5">
+                                {whoToFollow.map((u) => (
+                                    <div
+                                        key={u.id}
+                                        className="flex items-center justify-between gap-2"
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                navigate(`/user/${u.name}`)
+                                            }
+                                            className="flex items-center gap-2.5 min-w-0 text-left group cursor-pointer"
+                                        >
+                                            <Avatar
+                                                name={u.name}
+                                                avatarRef={u.avatar}
+                                                size="sm"
+                                            />
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium truncate group-hover:underline">
+                                                    {u.displayName ||
+                                                        `@${u.name}`}
+                                                </div>
+                                                <div className="text-xs ui-text-muted truncate">
+                                                    @{u.name}
+                                                </div>
+                                            </div>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() =>
+                                                handleToggleFollowUser(
+                                                    u.id,
+                                                    u.name,
+                                                )
+                                            }
+                                            className="text-xs font-medium px-3 py-1 rounded-full ui-accent-soft hover:opacity-90 transition cursor-pointer shrink-0"
+                                        >
+                                            Follow
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {/* Trending Hashtags Card */}
                     <div className="rounded-2xl ui-surface border ui-border p-4 space-y-3">

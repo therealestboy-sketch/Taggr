@@ -4,7 +4,7 @@ import { avatarGradient, avatarInitials, resolveMediaRef } from "../utils";
 type AvatarProps = {
     name: string;
     avatarRef?: string | null;
-    size?: "sm" | "md" | "lg" | "xl";
+    size?: "xs" | "sm" | "md" | "lg" | "xl";
     rounded?: "full" | "2xl";
     className?: string;
     onClick?: () => void;
@@ -12,6 +12,7 @@ type AvatarProps = {
 };
 
 const SIZE_CLASSES: Record<NonNullable<AvatarProps["size"]>, string> = {
+    xs: "w-5 h-5 text-[10px]",
     sm: "w-8 h-8 text-xs",
     md: "w-9 h-9 text-xs",
     lg: "w-10 h-10 text-xs",

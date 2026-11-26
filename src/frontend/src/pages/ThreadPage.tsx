@@ -69,6 +69,7 @@ export const ThreadPage: React.FC<{ postId: number }> = ({ postId }) => {
                     <PostCard
                         post={rootPost}
                         inThread
+                        showThreadLine={replies.length > 0}
                         onDeleted={() => navigate("/")}
                     />
                     <Composer
@@ -83,17 +84,24 @@ export const ThreadPage: React.FC<{ postId: number }> = ({ postId }) => {
                             No replies yet. Start the conversation above.
                         </div>
                     ) : (
-                        replies.map((reply) => (
-                            <PostCard
-                                key={reply.id}
-                                post={reply}
-                                onDeleted={(id) =>
-                                    setPosts((prev) =>
-                                        prev.filter((p) => p.id !== id),
-                                    )
-                                }
-                            />
-                        ))
+                        <>
+                            <div className="px-4 py-2 border-b ui-border text-xs font-medium ui-text-muted">
+                                {replies.length}{" "}
+                                {replies.length === 1 ? "reply" : "replies"}
+                            </div>
+                            {replies.map((reply, idx) => (
+                                <PostCard
+                                    key={reply.id}
+                                    post={reply}
+                                    showThreadLine={idx < replies.length - 1}
+                                    onDeleted={(id) =>
+                                        setPosts((prev) =>
+                                            prev.filter((p) => p.id !== id),
+                                        )
+                                    }
+                                />
+                            ))}
+                        </>
                     )}
                 </>
             )}
